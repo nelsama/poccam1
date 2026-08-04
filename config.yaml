@@ -1,0 +1,33 @@
+# Configuración del Backend de Monitoreo de Paneles
+captura:
+  fuente: "camara"          # "pantalla" (captura de monitor) | "camara" (USB/IP)
+  camara_fuente: "http://192.168.1.144:8080/stream/frontal"  # URL de la cámara IP
+  nombre_camara: "panel-1"  # nombre legible para identificar en el log de eventos
+  region: null              # [left, top, width, height] o null para pantalla completa
+  monitor: 1                # número de monitor (1 = principal)
+  intervalo_segundos: 0.25  # ← CADA CUÁNTO se pide imagen a la cámara (0.25s = 4 fps)
+
+deteccion:
+  metodo: "ssim"             # "ssim" (robusto a sombras/luz) | "diff" | "mse"
+  umbral: 0.02              # referencia; la decisión real la toma min_area_px
+  min_area_px: 5            # píxeles mínimos de cambio para disparar (genérico)
+  blur_ksize: 5             # desenfoque que elimina ruido de compresión
+  marcar_cambios: false     # false = NO dibujar líneas rojas sobre el cambio
+  frames_estables: 2        # capturas consecutivas para confirmar un cambio
+                            # 2 = 0.5s de confirmación (rápido y anti-parpadeo)
+  min_intervalo_eventos: 1.0  # seg. mínimos entre eventos
+
+web:
+  enabled: true             # panel web para definir el área de análisis
+  host: "0.0.0.0"           # 0.0.0.0 = accesible desde otros equipos de la red
+  port: 5000                # puerto del panel
+
+registro:
+  log_eventos: "eventos.jsonl"  # log estructurado (1 línea JSON por evento)
+  save_changes: true            # guardar la imagen de cada evento
+  output_dir: "capturas_cambio" # carpeta de imágenes de eventos
+  max_imagenes: 20              # máx. archivos en la carpeta (0 = sin límite)
+  nivel: "INFO"                 # DEBUG para ver todas las comparaciones
+
+ia:
+  enabled: false            # futuro: enviar imagen a IA solo cuando hay evento

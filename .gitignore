@@ -1,0 +1,30 @@
+# ── Python ──────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# ── Datos generados por la aplicación ────────────────────
+# Imágenes de eventos detectados (se regeneran al correr)
+capturas_cambio/
+# Log de eventos detectados
+eventos.jsonl
+# Área de análisis definida en el panel web
+roi.json
+
+# ── Archivos de prueba / diagnóstico ─────────────────────
+log_*.txt
+diagnostico/
+prueba_*.png
+
+# ── IDEs y sistema ───────────────────────────────────────
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# ── Credenciales y secretos (nunca subir) ────────────────
+.env
+*.key
