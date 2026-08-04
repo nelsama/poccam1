@@ -48,6 +48,8 @@ class DetectorCambios:
         self.conteo_cambios = 0
         # Último desplazamiento estimado (para diagnóstico)
         self.ultimo_desplazamiento: tuple[float, float] | None = None
+        # Rate-limit del aviso de vibración en el log (máx. 1 por segundo)
+        self._ultimo_log_vibracion = 0.0
 
     def procesar(self, imagen: np.ndarray):
         """
@@ -161,6 +163,7 @@ class DetectorCambios:
         un "cambio" falso en los bordes del display.
         """
         import cv2
+        import time
         from skimage.registration import phase_cross_correlation
         from scipy.ndimage import shift
 
@@ -181,11 +184,35 @@ class DetectorCambios:
         # razonable (si es enorme, probablemente cambió la escena)
         dy, dx = float(desplazamiento[0]), float(desplazamiento[1])
         magnitud = (dx * dx + dy * dy) ** 0.5
-        if magnitud > self.max_desplazamiento:
-            self.ultimo_desplazamiento = (dy, dx)
-            return actual  # desplazamiento demasiado grande, no corregir
-
         self.ultimo_desplazamiento = (dy, dx)
+
+        # Detalle por frame (nivel DEBUG): siempre
+        logger.debug(
+            "Desplazamiento estimado: dy=%+.2f dx=%+.2f px (%.2f px)",
+            dy, dx, magnitud,
+        )
+
+        if magnitud > self.max_desplazamiento:
+            # Desplazamiento enorme: no es vibración, es un cambio real
+            # de escena (cámara movida, panel tapado). No corregir.
+            logger.debug(
+                "Desplazamiento %.2f px supera el límite %.1f px — "
+                "no se corrige (posible cambio de escena)",
+                magnitud, self.max_desplazamiento,
+            )
+            return actual
+
+        # Aviso visible (INFO) cuando la vibración es apreciable,
+        # limitado a 1 aviso por segundo para no inundar el log.
+        ahora = time.monotonic()
+        if magnitud > 0.3 and ahora - self._ultimo_log_vibracion >= 1.0:
+            self._ultimo_log_vibracion = ahora
+            logger.info(
+                "⚠️ Vibración detectada: dy=%+.2f dx=%+.2f px "
+                "— compensando antes de comparar",
+                dy, dx,
+            )
+
         # Imagen BGR de 3 canales → el desplazamiento debe tener 3 ejes;
         # el canal (eje 2) nunca se desplaza.
         return shift(actual, (dy, dx, 0), mode="nearest")

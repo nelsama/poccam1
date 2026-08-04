@@ -59,7 +59,7 @@ class MonitorBackend:
         if not self.config.web_enabled:
             return
         from backend.web import crear_app
-        app = crear_app(self.capturador, config=self.config)
+        app = crear_app(self.capturador, config=self.config, detector=self.detector)
         hilo = threading.Thread(
             target=app.run,
             kwargs={"host": self.config.web_host,

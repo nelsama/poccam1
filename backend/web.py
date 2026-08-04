@@ -11,6 +11,7 @@ en cada ciclo, así los cambios se aplican sin reiniciar el backend.
 
 import json
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -180,6 +181,7 @@ PAGINA = """<!DOCTYPE html>
   #guardar { background: #2e7d32; color: white; }
   #limpiar { background: #c62828; color: white; }
   #estado { margin-top: 12px; font-size: 14px; color: #81c784; }
+  #vibracion { margin-top: 6px; font-size: 14px; }
   .info { max-width: 800px; }
   .columnas { display: flex; gap: 24px; align-items: flex-start;
               flex-wrap: wrap; margin-top: 12px; }
@@ -228,6 +230,7 @@ PAGINA = """<!DOCTYPE html>
         <button class="boton" id="limpiar">🗑️ Quitar área</button>
       </div>
       <div id="estado"></div>
+      <div id="vibracion"></div>
     </div>
 
     <div class="col-der">
@@ -344,6 +347,28 @@ document.getElementById('limpiar').addEventListener('click', async () => {
 
 function estado(msg) { document.getElementById('estado').textContent = msg; }
 
+// ── Indicador de vibración (compensación de imágenes) ────────────────
+// Muestra en vivo el desplazamiento estimado por la alineación.
+// Con cámara estable muestra "sin vibración"; al golpear el soporte
+// o vibrar la cámara muestra el desplazamiento que se está compensando.
+const fuenteEstado = new EventSource('/api/estado');
+fuenteEstado.onmessage = (ev) => {
+  const d = JSON.parse(ev.data);
+  const el = document.getElementById('vibracion');
+  if (!d.alinear) {
+    el.textContent = '';
+    return;
+  }
+  if (d.activo) {
+    el.textContent = `⚠️ Vibración detectada: dy=${d.dy}, dx=${d.dx} px — compensando`;
+    el.style.color = '#ffb74d';
+  } else {
+    el.textContent = `✅ Sin vibración (desplazamiento dy=${d.dy}, dx=${d.dx} px)`;
+    el.style.color = '#81c784';
+  }
+};
+fuenteEstado.onerror = () => { /* EventSource reconecta solo */ };
+
 // ── Últimas capturas ────────────────────────────────────────────────
 // Actualización INCREMENTAL: solo toca los elementos que cambiaron,
 // sin recargar las imágenes existentes ni causar saltos de scroll.
@@ -444,8 +469,12 @@ imagen.src = '/video';
 """
 
 
-def crear_app(capturador, config=None):
-    """Crea la aplicación Flask conectada al capturador activo."""
+def crear_app(capturador, config=None, detector=None):
+    """Crea la aplicación Flask conectada al capturador activo.
+
+    `detector` es opcional: si se pasa, el panel muestra en vivo el
+    desplazamiento estimado por la compensación de vibración.
+    """
     global RUTA_CAPTURAS
     if config is not None:
         # Usar la misma carpeta de capturas que el backend
@@ -558,6 +587,38 @@ def crear_app(capturador, config=None):
                         ultimo = _contador_capturas
                 if cambio:
                     yield f"data: {ultimo}\n\n"
+
+        return Response(generar(), mimetype="text/event-stream",
+                        headers={"Cache-Control": "no-cache",
+                                 "X-Accel-Buffering": "no"})
+
+    @app.route("/api/estado")
+    def api_estado():
+        """
+        SSE: desplazamiento estimado por la compensación de vibración,
+        para ver en vivo si la alineación está actuando. Si la vibración
+        está desactivada, envía un único mensaje indicándolo.
+        """
+        def generar():
+            ultimo_valor = None
+            while True:
+                if detector is not None and getattr(
+                        detector, "alinear_imagenes", False):
+                    desp = getattr(detector, "ultimo_desplazamiento", None)
+                    dy = round(float(desp[0]), 2) if desp else 0.0
+                    dx = round(float(desp[1]), 2) if desp else 0.0
+                    valor = {
+                        "alinear": True,
+                        "dy": dy,
+                        "dx": dx,
+                        "activo": (dy * dy + dx * dx) ** 0.5 > 0.3,
+                    }
+                else:
+                    valor = {"alinear": False}
+                if valor != ultimo_valor:
+                    ultimo_valor = valor
+                    yield f"data: {json.dumps(valor)}\n\n"
+                time.sleep(1.0)
 
         return Response(generar(), mimetype="text/event-stream",
                         headers={"Cache-Control": "no-cache",
