@@ -42,6 +42,8 @@ class MonitorBackend:
             blur_ksize=config.blur_ksize,
             marcar_cambios=config.marcar_cambios,
             frames_estables=config.frames_estables,
+            alinear_imagenes=config.alinear_imagenes,
+            max_desplazamiento=config.max_desplazamiento,
         )
         self.registrador = RegistradorEventos(config)
 

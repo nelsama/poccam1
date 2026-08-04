@@ -10,12 +10,18 @@ captura:
 deteccion:
   metodo: "ssim"             # "ssim" (robusto a sombras/luz) | "diff" | "mse"
   umbral: 0.02              # referencia; la decisión real la toma min_area_px
-  min_area_px: 5            # píxeles mínimos de cambio para disparar (genérico)
+  min_area_px: 50           # píxeles mínimos de cambio para disparar
   blur_ksize: 5             # desenfoque que elimina ruido de compresión
   marcar_cambios: false     # false = NO dibujar líneas rojas sobre el cambio
   frames_estables: 2        # capturas consecutivas para confirmar un cambio
-                            # 2 = 0.5s de confirmación (rápido y anti-parpadeo)
   min_intervalo_eventos: 1.0  # seg. mínimos entre eventos
+
+  # Compensación de vibración (registro/alineación de imágenes)
+  # Activar solo si la cámara está montada en una máquina que vibra.
+  # La correlación de fase estima el desplazamiento en X e Y y lo corrige
+  # antes de comparar, para que la vibración no genere falsos cambios.
+  alinear_imagenes: false
+  max_desplazamiento: 10.0  # máx. desplazamiento a corregir (píxeles)
 
 web:
   enabled: true             # panel web para definir el área de análisis

@@ -32,17 +32,22 @@ class DetectorCambios:
     """
 
     def __init__(self, metodo="diff", umbral=0.02, min_area_px=100,
-                 blur_ksize=5, marcar_cambios=False, frames_estables=2):
+                 blur_ksize=5, marcar_cambios=False, frames_estables=2,
+                 alinear_imagenes=False, max_desplazamiento=10.0):
         self.metodo = metodo
         self.umbral = umbral
         self.min_area_px = min_area_px
         self.blur_ksize = blur_ksize
         self.marcar_cambios = marcar_cambios
         self.frames_estables = max(1, frames_estables)
+        self.alinear_imagenes = alinear_imagenes
+        self.max_desplazamiento = max(1.0, max_desplazamiento)
         # Referencia estable: la última imagen confirmada sin cambio
         self.imagen_referencia: np.ndarray | None = None
         # Contador de cambios consecutivos respecto a la referencia
         self.conteo_cambios = 0
+        # Último desplazamiento estimado (para diagnóstico)
+        self.ultimo_desplazamiento: tuple[float, float] | None = None
 
     def procesar(self, imagen: np.ndarray):
         """
@@ -93,6 +98,12 @@ class DetectorCambios:
         color_actual = self._a_color(imagen_analizada)
         color_referencia = self._a_color(self.imagen_referencia)
 
+        # Compensación de vibración: alinear el frame actual contra la
+        # referencia ANTES de comparar. La correlación de fase estima el
+        # desplazamiento en X e Y (sub-píxel) y lo corrige.
+        if self.alinear_imagenes:
+            color_actual = self._alinear(color_referencia, color_actual)
+
         if self.metodo == "diff":
             resultado = self._diff(color_referencia, color_actual, imagen_analizada)
         elif self.metodo == "ssim":
@@ -140,6 +151,44 @@ class DetectorCambios:
             k = self.blur_ksize if self.blur_ksize % 2 == 1 else self.blur_ksize + 1
             return cv2.GaussianBlur(img, (k, k), 0)
         return img
+
+    def _alinear(self, referencia, actual):
+        """
+        Compensa la vibración de la cámara: estima el desplazamiento
+        (X e Y, con sub-píxel) entre la referencia y el frame actual
+        usando correlación de fase, y desplaza el frame para que
+        coincida con la referencia. Así la vibración no aparece como
+        un "cambio" falso en los bordes del display.
+        """
+        import cv2
+        from skimage.registration import phase_cross_correlation
+        from scipy.ndimage import shift
+
+        # Correlación de fase sobre la imagen en gris (más estable)
+        ref_gris = cv2.cvtColor(referencia, cv2.COLOR_BGR2GRAY)
+        act_gris = cv2.cvtColor(actual, cv2.COLOR_BGR2GRAY)
+
+        try:
+            desplazamiento, error, _ = phase_cross_correlation(
+                ref_gris, act_gris, upsample_factor=10
+            )
+        except Exception:
+            # Si falla (imagen sin textura), devolver sin alinear
+            self.ultimo_desplazamiento = None
+            return actual
+
+        # Límite de seguridad: solo corregir si el desplazamiento es
+        # razonable (si es enorme, probablemente cambió la escena)
+        dy, dx = float(desplazamiento[0]), float(desplazamiento[1])
+        magnitud = (dx * dx + dy * dy) ** 0.5
+        if magnitud > self.max_desplazamiento:
+            self.ultimo_desplazamiento = (dy, dx)
+            return actual  # desplazamiento demasiado grande, no corregir
+
+        self.ultimo_desplazamiento = (dy, dx)
+        # Imagen BGR de 3 canales → el desplazamiento debe tener 3 ejes;
+        # el canal (eje 2) nunca se desplaza.
+        return shift(actual, (dy, dx, 0), mode="nearest")
 
     def _decidir(self, area: int, total: int) -> bool:
         """

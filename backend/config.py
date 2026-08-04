@@ -30,6 +30,10 @@ class Config:
                                     # un cambio (filtro anti-parpadeo)
     min_intervalo_eventos: float = 5.0  # segundos mínimos entre eventos
 
+    # Compensación de vibración (registro de imágenes)
+    alinear_imagenes: bool = False  # True = compensa vibración de la cámara
+    max_desplazamiento: float = 10.0  # máx. desplazamiento a corregir (px)
+
     # Panel web (configuración del área de análisis)
     web_enabled: bool = True
     web_host: str = "0.0.0.0"
@@ -69,6 +73,9 @@ class Config:
         cfg.frames_estables = d.get("frames_estables", cfg.frames_estables)
         cfg.min_intervalo_eventos = d.get("min_intervalo_eventos",
                                           cfg.min_intervalo_eventos)
+        cfg.alinear_imagenes = d.get("alinear_imagenes", cfg.alinear_imagenes)
+        cfg.max_desplazamiento = d.get("max_desplazamiento",
+                                       cfg.max_desplazamiento)
 
         r = raw.get("registro", {})
         cfg.log_eventos = r.get("log_eventos", cfg.log_eventos)
