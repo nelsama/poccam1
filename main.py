@@ -141,6 +141,7 @@ class MonitorBackend:
                             "imagen_marcada": resultado["imagen_marcada"],
                             "score": resultado["score"],
                             "area_px": resultado["area_px"],
+                            "area_borde": resultado.get("area_borde", 0),
                             "metodo": self.config.metodo,
                             "camara": self._nombre_fuente(),
                             "capturas_total": self.conteo_capturas,

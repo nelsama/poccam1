@@ -50,6 +50,38 @@ class DetectorCambios:
         self.ultimo_desplazamiento: tuple[float, float] | None = None
         # Rate-limit del aviso de vibración en el log (máx. 1 por segundo)
         self._ultimo_log_vibracion = 0.0
+        # Última comparación (diagnóstico para el panel web)
+        self.ultimo_margen = 0           # px recortados de cada borde
+        self.ultimo_area_interior = 0    # cambio real (contenido)
+        self.ultimo_area_borde = 0       # cambio en la franja del borde
+
+    def actualizar(self, parametros: dict):
+        """Aplica parámetros de detección EN CALIENTE (desde el panel web).
+
+        Acepta un subconjunto de claves: metodo, umbral, min_area_px,
+        blur_ksize, marcar_cambios, frames_estables, alinear_imagenes,
+        max_desplazamiento. Lanza ValueError si un valor es inválido.
+        """
+        if "metodo" in parametros:
+            m = parametros["metodo"]
+            if m not in ("ssim", "diff", "mse"):
+                raise ValueError(f"Método desconocido: {m}")
+            self.metodo = m
+        if "umbral" in parametros:
+            self.umbral = float(parametros["umbral"])
+        if "min_area_px" in parametros:
+            self.min_area_px = max(0, int(parametros["min_area_px"]))
+        if "blur_ksize" in parametros:
+            self.blur_ksize = max(0, int(parametros["blur_ksize"]))
+        if "marcar_cambios" in parametros:
+            self.marcar_cambios = bool(parametros["marcar_cambios"])
+        if "frames_estables" in parametros:
+            self.frames_estables = max(1, int(parametros["frames_estables"]))
+        if "alinear_imagenes" in parametros:
+            self.alinear_imagenes = bool(parametros["alinear_imagenes"])
+        if "max_desplazamiento" in parametros:
+            self.max_desplazamiento = max(1.0,
+                                          float(parametros["max_desplazamiento"]))
 
     def procesar(self, imagen: np.ndarray):
         """
@@ -102,14 +134,22 @@ class DetectorCambios:
 
         # Compensación de vibración: alinear el frame actual contra la
         # referencia ANTES de comparar. La correlación de fase estima el
-        # desplazamiento en X e Y (sub-píxel) y lo corrige.
+        # desplazamiento en X e Y (sub-píxel) y lo corrige. Devuelve
+        # también el margen recortado para no comparar los bordes
+        # (donde la alineación rellena píxeles que no son reales).
         if self.alinear_imagenes:
-            color_actual = self._alinear(color_referencia, color_actual)
+            color_actual, self.ultimo_margen = self._alinear(
+                color_referencia, color_actual)
+        else:
+            self.ultimo_margen = 0
 
+        margen = self.ultimo_margen
         if self.metodo == "diff":
-            resultado = self._diff(color_referencia, color_actual, imagen_analizada)
+            resultado = self._diff(color_referencia, color_actual,
+                                   imagen_analizada, margen)
         elif self.metodo == "ssim":
-            resultado = self._ssim(color_referencia, color_actual, imagen_analizada)
+            resultado = self._ssim(color_referencia, color_actual,
+                                   imagen_analizada, margen)
         elif self.metodo == "mse":
             resultado = self._mse(color_referencia, color_actual)
         else:
@@ -161,8 +201,13 @@ class DetectorCambios:
         usando correlación de fase, y desplaza el frame para que
         coincida con la referencia. Así la vibración no aparece como
         un "cambio" falso en los bordes del display.
+
+        Retorna (imagen_alineada, margen): margen es el nº de píxeles
+        de la franja del borde que quedó "inventada" por el relleno y
+        que la comparación debe ignorar (0 si no se corrigió).
         """
         import cv2
+        import math
         import time
         from skimage.registration import phase_cross_correlation
         from scipy.ndimage import shift
@@ -178,7 +223,7 @@ class DetectorCambios:
         except Exception:
             # Si falla (imagen sin textura), devolver sin alinear
             self.ultimo_desplazamiento = None
-            return actual
+            return actual, 0
 
         # Límite de seguridad: solo corregir si el desplazamiento es
         # razonable (si es enorme, probablemente cambió la escena)
@@ -200,7 +245,7 @@ class DetectorCambios:
                 "no se corrige (posible cambio de escena)",
                 magnitud, self.max_desplazamiento,
             )
-            return actual
+            return actual, 0
 
         # Aviso visible (INFO) cuando la vibración es apreciable,
         # limitado a 1 aviso por segundo para no inundar el log.
@@ -215,7 +260,10 @@ class DetectorCambios:
 
         # Imagen BGR de 3 canales → el desplazamiento debe tener 3 ejes;
         # el canal (eje 2) nunca se desplaza.
-        return shift(actual, (dy, dx, 0), mode="nearest")
+        alineada = shift(actual, (dy, dx, 0), mode="nearest")
+        margen = min(int(math.ceil(magnitud)),
+                     min(actual.shape[0], actual.shape[1]) // 2)
+        return alineada, margen
 
     def _decidir(self, area: int, total: int) -> bool:
         """
@@ -228,38 +276,68 @@ class DetectorCambios:
         """
         return area > self.min_area_px
 
-    def _diff(self, anterior, actual, img_color):
+    def _diff(self, anterior, actual, img_color, margen=0):
         """
         Diferencia absoluta EN COLOR (3 canales). Se cuenta un píxel
         como cambiado si CUALQUIER canal difiere del umbral.
+
+        `margen` (px de cada borde, de la alineación): esa franja se
+        excluye de la decisión porque ahí el contenido fue rellenado
+        por el shift y no representa un cambio real. Se reporta aparte.
         """
         import cv2
 
         diff = cv2.absdiff(anterior, actual)  # 3 canales
-        # Un píxel cambió si algún canal supera el umbral
-        mascara = (np.max(diff, axis=2) > 25).astype(np.uint8) * 255
+        # Umbral de sensibilidad a nivel píxel (0-1, editable en la web):
+        # un píxel cambia si ALGÚN canal difiere más de umbral*255.
+        # Más bajo = más sensible. (0.5 ≈ umbral de 127 sobre 255.)
+        umbral_px = max(1, int(self.umbral * 255))
+        mascara = (np.max(diff, axis=2) > umbral_px).astype(np.uint8) * 255
         # Limpiar manchas de ruido sueltas (apertura morfológica)
         mascara = cv2.morphologyEx(mascara, cv2.MORPH_OPEN,
                                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)))
-        area = cv2.countNonZero(mascara)
-        total = anterior.shape[0] * anterior.shape[1]
+        area_total = cv2.countNonZero(mascara)
 
-        hubo = self._decidir(area, total)
-        score = area / total
+        # Excluir la franja del borde (artefacto de la alineación)
+        area_borde = 0
+        area_interior = area_total
+        mascara_visual = mascara
+        if margen > 0 and mascara.shape[0] > 2 * margen \
+                and mascara.shape[1] > 2 * margen:
+            area_interior = cv2.countNonZero(
+                mascara[margen:-margen, margen:-margen])
+            area_borde = area_total - area_interior
+            if self.marcar_cambios:
+                mascara_visual = mascara.copy()
+                mascara_visual[:margen, :] = 0
+                mascara_visual[-margen:, :] = 0
+                mascara_visual[:, :margen] = 0
+                mascara_visual[:, -margen:] = 0
+
+        total = anterior.shape[0] * anterior.shape[1]
+        hubo = self._decidir(area_interior, total)
+        score = area_interior / total
+        self.ultimo_area_interior = area_interior
+        self.ultimo_area_borde = area_borde
 
         visual = None
         if hubo and self.marcar_cambios:
             visual = img_color.copy()
-            self._marcar_cambios(visual, mascara)
+            self._marcar_cambios(visual, mascara_visual)
 
         return {"hubo_cambio": hubo, "score": float(score),
-                "area_px": int(area), "imagen_marcada": visual}
+                "area_px": int(area_interior), "area_borde": int(area_borde),
+                "imagen_marcada": visual}
 
-    def _ssim(self, anterior, actual, img_color):
+    def _ssim(self, anterior, actual, img_color, margen=0):
         """
         SSIM EN COLOR: compara cada canal por separado y combina.
         Conserva la información de color (un LED rojo que cambia se
         detecta aunque su gris sea similar al fondo).
+
+        `margen` (px de cada borde, de la alineación): esa franja se
+        excluye de la decisión porque ahí el contenido fue rellenado
+        por el shift y no representa un cambio real. Se reporta aparte.
         """
         import cv2
         from skimage.metrics import structural_similarity as ssim
@@ -274,27 +352,52 @@ class DetectorCambios:
         diff_map = np.mean(diff_map, axis=2)  # promedio de los 3 canales
         diff = (diff_map * 255).astype(np.uint8)
 
-        _, mascara = cv2.threshold(diff, 128, 255, cv2.THRESH_BINARY)
+        # `diff` es el mapa de diferencia (0-255). El umbral 0-1 de la
+        # config se traduce directo: 0.5 ≈ el corte histórico de 128.
+        # Más bajo = más sensible (marca más píxeles como cambiados).
+        _, mascara = cv2.threshold(diff, max(1, int(self.umbral * 255)),
+                                   255, cv2.THRESH_BINARY)
         mascara = cv2.morphologyEx(mascara, cv2.MORPH_OPEN,
                                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)))
-        area = cv2.countNonZero(mascara)
-        total = anterior.shape[0] * anterior.shape[1]
+        area_total = cv2.countNonZero(mascara)
 
-        hubo = self._decidir(area, total)
+        # Excluir la franja del borde (artefacto de la alineación)
+        area_borde = 0
+        area_interior = area_total
+        mascara_visual = mascara
+        if margen > 0 and mascara.shape[0] > 2 * margen \
+                and mascara.shape[1] > 2 * margen:
+            area_interior = cv2.countNonZero(
+                mascara[margen:-margen, margen:-margen])
+            area_borde = area_total - area_interior
+            if self.marcar_cambios:
+                mascara_visual = mascara.copy()
+                mascara_visual[:margen, :] = 0
+                mascara_visual[-margen:, :] = 0
+                mascara_visual[:, :margen] = 0
+                mascara_visual[:, -margen:] = 0
+
+        total = anterior.shape[0] * anterior.shape[1]
+        hubo = self._decidir(area_interior, total)
+        self.ultimo_area_interior = area_interior
+        self.ultimo_area_borde = area_borde
 
         visual = None
         if hubo and self.marcar_cambios:
             visual = img_color.copy()
-            self._marcar_cambios(visual, mascara)
+            self._marcar_cambios(visual, mascara_visual)
 
         return {"hubo_cambio": hubo, "score": float(1 - score),
-                "area_px": int(area), "imagen_marcada": visual}
+                "area_px": int(area_interior), "area_borde": int(area_borde),
+                "imagen_marcada": visual}
 
     def _mse(self, anterior, actual):
+        self.ultimo_area_interior = 0
+        self.ultimo_area_borde = 0
         mse = float(np.mean((anterior.astype(float) - actual.astype(float)) ** 2))
         score = min(mse / 65025.0, 1.0)  # 255² ≈ 65025 → normaliza a 0-1
         return {"hubo_cambio": score > self.umbral, "score": score,
-                "area_px": 0, "imagen_marcada": None}
+                "area_px": 0, "area_borde": 0, "imagen_marcada": None}
 
     def _marcar_cambios(self, visual, mascara):
         """

@@ -22,7 +22,9 @@ class Config:
 
     # Detección
     metodo: str = "ssim"            # ssim | diff | mse
-    umbral: float = 0.02            # 0-1, más bajo = más sensible (dígitos)
+    umbral: float = 0.5            # 0-1: sensibilidad a nivel píxel
+                                  # (0.5 ≈ corte clásico de ssim; más
+                                  # bajo = más sensible)
     min_area_px: int = 100          # píxeles mínimos de cambio (genérico)
     blur_ksize: int = 5             # desenfoque (elimina ruido de compresión)
     marcar_cambios: bool = False    # False = NO dibujar líneas rojas
@@ -49,12 +51,16 @@ class Config:
     # IA (futuro, por ahora sin uso)
     ia_enabled: bool = False
 
+    # Ruta del YAML que originó esta config (para guardar cambios en vivo)
+    _ruta_yaml: str = "config.yaml"
+
     @classmethod
     def from_yaml(cls, path: str = "config.yaml") -> "Config":
         with open(path, "r", encoding="utf-8") as f:
             raw = yaml.safe_load(f) or {}
 
         cfg = cls()
+        cfg._ruta_yaml = str(Path(path).resolve())
 
         c = raw.get("captura", {})
         cfg.fuente = c.get("fuente", cfg.fuente)
@@ -97,3 +103,61 @@ class Config:
         cfg.web_port = web.get("port", cfg.web_port)
 
         return cfg
+
+    def a_dict(self) -> dict:
+        """Serializa la config al mismo formato de secciones del YAML."""
+        def rel(ruta: str) -> str:
+            """Ruta relativa a la raíz (para que el YAML siga siendo portable)."""
+            try:
+                return str(Path(ruta).relative_to(RAIZ))
+            except ValueError:
+                return ruta
+
+        return {
+            "captura": {
+                "fuente": self.fuente,
+                "camara_fuente": self.camara_fuente,
+                "nombre_camara": self.nombre_camara,
+                "region": self.region,
+                "monitor": self.monitor,
+                "intervalo_segundos": self.intervalo_segundos,
+            },
+            "deteccion": {
+                "metodo": self.metodo,
+                "umbral": self.umbral,
+                "min_area_px": self.min_area_px,
+                "blur_ksize": self.blur_ksize,
+                "marcar_cambios": self.marcar_cambios,
+                "frames_estables": self.frames_estables,
+                "min_intervalo_eventos": self.min_intervalo_eventos,
+                "alinear_imagenes": self.alinear_imagenes,
+                "max_desplazamiento": self.max_desplazamiento,
+            },
+            "web": {
+                "enabled": self.web_enabled,
+                "host": self.web_host,
+                "port": self.web_port,
+            },
+            "registro": {
+                "log_eventos": rel(self.log_eventos),
+                "save_changes": self.save_changes,
+                "output_dir": rel(self.output_dir),
+                "max_imagenes": self.max_imagenes,
+                "nivel": self.nivel_log,
+            },
+            "ia": {"enabled": self.ia_enabled},
+        }
+
+    def guardar(self, path: str | None = None):
+        """Escribe la configuración actual al YAML (persiste los cambios
+        hechos desde el panel web).
+
+        El archivo se regenera por completo: se pierden los comentarios
+        escritos a mano, pero el formato de secciones se conserva.
+        """
+        destino = path or self._ruta_yaml
+        with open(destino, "w", encoding="utf-8") as f:
+            f.write("# Configuración del Backend de Monitoreo de Paneles\n")
+            f.write("# Generado por el panel web al guardar parámetros en vivo.\n")
+            yaml.safe_dump(self.a_dict(), f, allow_unicode=True,
+                           sort_keys=False)

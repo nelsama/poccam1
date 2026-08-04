@@ -38,6 +38,13 @@ def notificar_captura_nueva():
         _condicion_capturas.notify_all()
 
 
+def _bool(v):
+    """Convierte a booleano tolerando strings enviados por el navegador."""
+    if isinstance(v, str):
+        return v.strip().lower() in ("1", "true", "si", "yes", "on")
+    return bool(v)
+
+
 def cargar_roi():
     """Devuelve [left, top, width, height] o None si no hay área definida."""
     if RUTA_ROI.exists():
@@ -155,6 +162,7 @@ def construir_log_web(archivo_log: Path, min_area_px: int):
             "timestamp": ev.get("timestamp", ""),
             "score": round(float(ev.get("score", 0)), 4),
             "area_px": int(ev.get("area_px", 0)),
+            "area_borde": int(ev.get("area_borde", 0)),
             "camara": ev.get("camara", ""),
             "imagen": ev.get("imagen_original", ""),
             "sugerencia": sugerencia_ajuste(ev, min_area_px),
@@ -177,11 +185,31 @@ PAGINA = """<!DOCTYPE html>
            border-radius: 6px; }
   #lienzo { position: absolute; inset: 0; cursor: crosshair; }
   .boton { padding: 10px 18px; margin: 8px 8px 0 0; border: 0;
-           border-radius: 5px; font-size: 14px; cursor: pointer; }
+           border-radius: 5px; font-size: 14px; cursor: pointer;
+           transition: transform 0.05s, opacity 0.15s; }
+  .boton:active { transform: scale(0.96); }  /* feedback de presión */
+  .boton:disabled { opacity: 0.55; cursor: wait; }
   #guardar { background: #2e7d32; color: white; }
   #limpiar { background: #c62828; color: white; }
   #estado { margin-top: 12px; font-size: 14px; color: #81c784; }
   #vibracion { margin-top: 6px; font-size: 14px; }
+  /* Formulario de parámetros en vivo */
+  #params { margin-top: 8px; max-width: 640px; }
+  .param-grid { display: grid; grid-template-columns: repeat(2, 1fr);
+                gap: 8px 16px; margin: 8px 0; }
+  .param-grid label { font-size: 12px; color: #aaa;
+                      display: flex; flex-direction: column; }
+  .param-grid input, .param-grid select { margin-top: 2px; padding: 5px 8px;
+    background: #262626; color: #eee; border: 1px solid #444;
+    border-radius: 5px; font-size: 13px; }
+  .param-checks { margin: 8px 0; display: flex; gap: 18px;
+                  font-size: 13px; color: #ccc; }
+  /* Parámetros que no aplican en el modo actual → atenuados */
+  #params input:disabled, #params select:disabled {
+    opacity: 0.45; cursor: not-allowed; }
+  .param-botones { display: flex; align-items: center; gap: 10px;
+                   margin-top: 4px; }
+  #params-estado { font-size: 13px; min-height: 18px; }
   .info { max-width: 800px; }
   .columnas { display: flex; gap: 24px; align-items: flex-start;
               flex-wrap: wrap; margin-top: 12px; }
@@ -231,6 +259,56 @@ PAGINA = """<!DOCTYPE html>
       </div>
       <div id="estado"></div>
       <div id="vibracion"></div>
+
+      <div id="params">
+        <h1 style="margin-top:16px">⚙️ Parámetros (en vivo)</h1>
+        <p class="info">Cada campo se aplica al terminar de editarlo
+           (Enter o clic fuera). El botón 💾 Aplicar aplica todo de una
+           vez. Todo se guarda en config.yaml.</p>
+        <div class="param-grid">
+          <label>Intervalo de sondeo (s)
+            <input id="p-intervalo" type="number" step="0.05" min="0.05">
+          </label>
+          <label>Método
+            <select id="p-metodo">
+              <option value="ssim">ssim</option>
+              <option value="diff">diff</option>
+              <option value="mse">mse</option>
+            </select>
+          </label>
+          <label>min_area_px (mín. de cambio)
+            <input id="p-min-area" type="number" step="1" min="0"
+                   title="No aplica con el método mse">
+          </label>
+          <label>Umbral (sensibilidad px, 0-1)
+            <input id="p-umbral" type="number" step="0.01" min="0" max="1"
+                   title="Más bajo = más sensible. En ssim 0.5 ≈ el corte clásico">
+          </label>
+          <label>Blur (k, impar)
+            <input id="p-blur" type="number" step="1" min="0">
+          </label>
+          <label>Frames estables
+            <input id="p-frames" type="number" step="1" min="1">
+          </label>
+          <label>Min. entre eventos (s)
+            <input id="p-intervalo-eventos" type="number" step="0.1" min="0">
+          </label>
+          <label>Máx. desplazamiento (px)
+            <input id="p-max-desp" type="number" step="0.5" min="1"
+                   title="Solo aplica si la compensación de vibración está activa">
+          </label>
+        </div>
+        <div class="param-checks">
+          <label><input id="p-marcar" type="checkbox"
+                 title="No aplica con el método mse"> Marcar cambios</label>
+          <label><input id="p-alinear" type="checkbox"> Compensar vibración</label>
+        </div>
+        <div class="param-botones">
+          <button class="boton" id="btn-aplicar" style="background:#1565c0">💾 Aplicar todo</button>
+          <button class="boton" id="btn-recargar" style="background:#455a64">🔄 Recargar valores</button>
+          <span id="params-estado"></span>
+        </div>
+      </div>
     </div>
 
     <div class="col-der">
@@ -356,18 +434,171 @@ fuenteEstado.onmessage = (ev) => {
   const d = JSON.parse(ev.data);
   const el = document.getElementById('vibracion');
   if (!d.alinear) {
-    el.textContent = '';
+    // Estado explícito: así nunca hay duda de si está activa o no
+    el.textContent = '🚫 Compensación de vibración DESACTIVADA';
+    el.style.color = '#aaa';
     return;
   }
   if (d.activo) {
-    el.textContent = `⚠️ Vibración detectada: dy=${d.dy}, dx=${d.dx} px — compensando`;
+    el.textContent = `⚠️ Vibración: dy=${d.dy}, dx=${d.dx} px · margen ${d.margen}px · cambio ${d.area_interior}px interior / ${d.area_borde}px borde`;
     el.style.color = '#ffb74d';
   } else {
-    el.textContent = `✅ Sin vibración (desplazamiento dy=${d.dy}, dx=${d.dx} px)`;
+    el.textContent = `✅ Sin vibración (dy=${d.dy}, dx=${d.dx} px) · margen ${d.margen}px · cambio ${d.area_interior}px interior / ${d.area_borde}px borde`;
     el.style.color = '#81c784';
   }
 };
 fuenteEstado.onerror = () => { /* EventSource reconecta solo */ };
+
+// ── Parámetros en vivo ────────────────────────────────────────────────
+async function cargarParams() {
+  try {
+    const res = await fetch('/api/config');
+    const cfg = await res.json();
+    document.getElementById('p-intervalo').value = cfg.captura.intervalo_segundos;
+    document.getElementById('p-metodo').value = cfg.deteccion.metodo;
+    document.getElementById('p-min-area').value = cfg.deteccion.min_area_px;
+    document.getElementById('p-umbral').value = cfg.deteccion.umbral;
+    document.getElementById('p-blur').value = cfg.deteccion.blur_ksize;
+    document.getElementById('p-frames').value = cfg.deteccion.frames_estables;
+    document.getElementById('p-intervalo-eventos').value = cfg.deteccion.min_intervalo_eventos;
+    document.getElementById('p-max-desp').value = cfg.deteccion.max_desplazamiento;
+    document.getElementById('p-marcar').checked = cfg.deteccion.marcar_cambios;
+    document.getElementById('p-alinear').checked = cfg.deteccion.alinear_imagenes;
+    actualizarHabilitados();
+  } catch (e) { /* si falla, dejar los valores por defecto */ }
+}
+
+function num(id) { return document.getElementById(id).value; }
+
+// Habilita/deshabilita campos según el método y la vibración:
+// un parámetro solo se edita cuando realmente tiene efecto.
+function actualizarHabilitados() {
+  const esMse = document.getElementById('p-metodo').value === 'mse';
+  const alinear = document.getElementById('p-alinear').checked;
+  document.getElementById('p-min-area').disabled = esMse;
+  document.getElementById('p-marcar').disabled = esMse;
+  document.getElementById('p-max-desp').disabled = !alinear;
+  // `umbral` siempre aplica: mse lo usa como corte de score,
+  // ssim/diff como sensibilidad a nivel píxel.
+}
+
+async function aplicar(cuerpo, mensajeExito) {
+  const estadoEl = document.getElementById('params-estado');
+  try {
+    const res = await fetch('/api/config', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(cuerpo),
+    });
+    const d = await res.json();
+    if (d.ok) {
+      estadoEl.textContent = mensajeExito || '✅ Aplicado y guardado en config.yaml';
+      estadoEl.style.color = '#81c784';
+      return true;
+    } else {
+      estadoEl.textContent = '❌ ' + (d.error || 'Error');
+      estadoEl.style.color = '#ff8a80';
+      return false;
+    }
+  } catch (e) {
+    estadoEl.textContent = '❌ Error de conexión';
+    estadoEl.style.color = '#ff8a80';
+    return false;
+  }
+}
+
+// Los checkboxes se aplican SOLOS al marcarlos/desmarcarlos (parcial)
+document.getElementById('p-marcar').addEventListener('change', () => {
+  const activo = document.getElementById('p-marcar').checked;
+  aplicar({deteccion: {marcar_cambios: activo}},
+          activo ? '✅ Marcar cambios ACTIVADO' : '✅ Marcar cambios DESACTIVADO');
+});
+document.getElementById('p-alinear').addEventListener('change', () => {
+  const activo = document.getElementById('p-alinear').checked;
+  aplicar({deteccion: {alinear_imagenes: activo}},
+          activo ? '✅ Compensación de vibración ACTIVADA' : '✅ Compensación de vibración DESACTIVADA');
+  actualizarHabilitados();
+});
+
+// Cada campo numérico/select se aplica SOLO al terminar de editarlo
+// (evento change = Enter o clic fuera). Así el valor visible siempre
+// coincide con el aplicado, sin depender del botón.
+const CAMPOS = [
+  ['p-intervalo', 'captura', 'intervalo_segundos', parseFloat],
+  ['p-metodo', 'deteccion', 'metodo', v => v],
+  ['p-umbral', 'deteccion', 'umbral', parseFloat],
+  ['p-min-area', 'deteccion', 'min_area_px', v => parseInt(v, 10)],
+  ['p-blur', 'deteccion', 'blur_ksize', v => parseInt(v, 10)],
+  ['p-frames', 'deteccion', 'frames_estables', v => parseInt(v, 10)],
+  ['p-intervalo-eventos', 'deteccion', 'min_intervalo_eventos', parseFloat],
+  ['p-max-desp', 'deteccion', 'max_desplazamiento', parseFloat],
+];
+for (const [id, seccion, clave, conv] of CAMPOS) {
+  document.getElementById(id).addEventListener('change', () => {
+    const v = conv(document.getElementById(id).value);
+    const estadoEl = document.getElementById('params-estado');
+    if (Number.isNaN(v)) {
+      estadoEl.textContent = '⚠️ Valor incompleto — termina de escribir y pulsa Enter';
+      estadoEl.style.color = '#ffb74d';
+      return;
+    }
+    aplicar({[seccion]: {[clave]: v}});
+  });
+}
+
+// Al cambiar el método, re-evaluar qué campos quedan editables
+document.getElementById('p-metodo').addEventListener('change', actualizarHabilitados);
+
+// Recargar los valores aplicados desde el servidor (verdad en vivo),
+// por si otro cliente o edición manual cambió algo
+const btnRecargar = document.getElementById('btn-recargar');
+if (btnRecargar) {
+  btnRecargar.addEventListener('click', () => {
+    cargarParams();
+    document.getElementById('params-estado').textContent = '🔄 Valores recargados desde el servidor';
+    document.getElementById('params-estado').style.color = '#aaa';
+  });
+}
+
+document.getElementById('btn-aplicar').addEventListener('click', async () => {
+  const btn = document.getElementById('btn-aplicar');
+  const etiquetaOriginal = '💾 Aplicar todo';
+  const colorOriginal = '#1565c0';
+  const cuerpo = {
+    captura: { intervalo_segundos: parseFloat(num('p-intervalo')) },
+    deteccion: {
+      metodo: num('p-metodo'),
+      umbral: parseFloat(num('p-umbral')),
+      min_area_px: parseInt(num('p-min-area'), 10),
+      blur_ksize: parseInt(num('p-blur'), 10),
+      frames_estables: parseInt(num('p-frames'), 10),
+      min_intervalo_eventos: parseFloat(num('p-intervalo-eventos')),
+      max_desplazamiento: parseFloat(num('p-max-desp')),
+      marcar_cambios: document.getElementById('p-marcar').checked,
+      alinear_imagenes: document.getElementById('p-alinear').checked,
+    },
+  };
+
+  // Estado "guardando": botón deshabilitado para evitar doble envío
+  btn.disabled = true;
+  btn.textContent = '⏳ Guardando...';
+  const ok = await aplicar(cuerpo);
+  btn.disabled = false;
+
+  // Feedback claro en el PROPIO botón: verde = éxito, rojo = error
+  if (ok) {
+    btn.style.background = '#2e7d32';
+    btn.textContent = '✅ Guardado';
+    cargarParams();  // resincroniza el formulario con lo aplicado
+  } else {
+    btn.style.background = '#c62828';
+    btn.textContent = '❌ Error';
+  }
+  setTimeout(() => {
+    btn.style.background = colorOriginal;
+    btn.textContent = etiquetaOriginal;
+  }, 1800);
+});
 
 // ── Últimas capturas ────────────────────────────────────────────────
 // Actualización INCREMENTAL: solo toca los elementos que cambiaron,
@@ -423,10 +654,11 @@ async function actualizarLog() {
     }
     cont.innerHTML = d.eventos.map(ev => {
       const hora = ev.timestamp ? ev.timestamp.replace('T', ' ').slice(0, 19) : '';
+      const borde = ev.area_borde > 0 ? ` | ⚠️ ${ev.area_borde}px eran de borde` : '';
       return `<div class="log-item">
         <div class="log-hora">🕐 ${hora}</div>
         <div class="log-metricas">
-          Cambio: <b>${ev.area_px} píxeles</b> | score: ${ev.score} | umbral actual: ${d.min_area_px}px
+          Cambio: <b>${ev.area_px} píxeles</b>${borde} | score: ${ev.score} | umbral actual: ${d.min_area_px}px
         </div>
         <div class="log-sugerencia">💡 ${ev.sugerencia}</div>
       </div>`;
@@ -452,6 +684,7 @@ document.getElementById('btn-limpiar-log').addEventListener('click', async () =>
 // Cargar al abrir la página
 actualizarUltimas();
 actualizarLog();
+cargarParams();
 
 // Actualizar SOLO cuando el servidor avisa que hay una captura nueva
 // (sin polling periódico)
@@ -553,12 +786,79 @@ def crear_app(capturador, config=None, detector=None):
     def api_log():
         """
         Últimos eventos con su score, área de píxeles y una sugerencia
-        de qué parámetro ajustar para el filtro.
+        de qué parámetro ajustar para el filtro. El umbral se lee EN
+        VIVO de la config (no del arranque), para que las sugerencias
+        reflejen los cambios hechos desde el panel.
         """
+        umbral_area = config.min_area_px if config is not None else min_area
         return jsonify({
-            "min_area_px": min_area,
-            "eventos": construir_log_web(ruta_log, min_area),
+            "min_area_px": umbral_area,
+            "eventos": construir_log_web(ruta_log, umbral_area),
         })
+
+    @app.route("/api/config")
+    def api_config():
+        """Parámetros actuales (captura + detección) para el panel web."""
+        if config is None:
+            return jsonify({"error": "Configuración no disponible"}), 503
+        return jsonify(config.a_dict())
+
+    @app.route("/api/config", methods=["POST"])
+    def api_config_guardar():
+        """
+        Aplica parámetros EN CALIENTE (sin reiniciar) y los persiste
+        en config.yaml. Acepta {"captura": {...}, "deteccion": {...}}.
+        """
+        if config is None:
+            return jsonify({"error": "Configuración no disponible"}), 503
+        datos = request.get_json(silent=True) or {}
+        try:
+            # ── Captura ──
+            c = datos.get("captura") or {}
+            if "intervalo_segundos" in c:
+                v = float(c["intervalo_segundos"])
+                if v <= 0:
+                    raise ValueError("intervalo_segundos debe ser > 0")
+                config.intervalo_segundos = v
+
+            # ── Detección: validar todo primero, aplicar después ──
+            d = datos.get("deteccion") or {}
+            nuevos = {}
+            if "metodo" in d:
+                if d["metodo"] not in ("ssim", "diff", "mse"):
+                    raise ValueError(f"Método desconocido: {d['metodo']}")
+                nuevos["metodo"] = d["metodo"]
+            if "umbral" in d:
+                nuevos["umbral"] = float(d["umbral"])
+            if "min_area_px" in d:
+                nuevos["min_area_px"] = max(0, int(d["min_area_px"]))
+            if "blur_ksize" in d:
+                nuevos["blur_ksize"] = max(0, int(d["blur_ksize"]))
+            if "marcar_cambios" in d:
+                nuevos["marcar_cambios"] = _bool(d["marcar_cambios"])
+            if "frames_estables" in d:
+                nuevos["frames_estables"] = max(1, int(d["frames_estables"]))
+            if "min_intervalo_eventos" in d:
+                v = float(d["min_intervalo_eventos"])
+                if v < 0:
+                    raise ValueError("min_intervalo_eventos debe ser >= 0")
+                nuevos["min_intervalo_eventos"] = v
+            if "alinear_imagenes" in d:
+                nuevos["alinear_imagenes"] = _bool(d["alinear_imagenes"])
+            if "max_desplazamiento" in d:
+                nuevos["max_desplazamiento"] = max(
+                    1.0, float(d["max_desplazamiento"]))
+
+            # Aplicar al detector (en caliente) y a la config compartida
+            if detector is not None:
+                detector.actualizar(nuevos)
+            for clave, valor in nuevos.items():
+                setattr(config, clave, valor)
+
+            config.guardar()  # persiste en config.yaml
+            return jsonify({"ok": True})
+        except (ValueError, TypeError) as e:
+            return jsonify({"ok": False, "error": str(e)}), 400
 
     @app.route("/api/log", methods=["DELETE"])
     def limpiar_log():
@@ -612,6 +912,11 @@ def crear_app(capturador, config=None, detector=None):
                         "dy": dy,
                         "dx": dx,
                         "activo": (dy * dy + dx * dx) ** 0.5 > 0.3,
+                        "margen": int(getattr(detector, "ultimo_margen", 0)),
+                        "area_interior": int(getattr(
+                            detector, "ultimo_area_interior", 0)),
+                        "area_borde": int(getattr(
+                            detector, "ultimo_area_borde", 0)),
                     }
                 else:
                     valor = {"alinear": False}

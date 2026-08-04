@@ -59,6 +59,7 @@ class RegistradorEventos:
             "metodo": evento.get("metodo", ""),
             "score": round(float(evento.get("score", 0.0)), 6),
             "area_px": int(evento.get("area_px", 0)),
+            "area_borde": int(evento.get("area_borde", 0)),
             "imagen_original": ruta_original,
             "imagen_marcada": ruta_marcada,
             "capturas_total": evento.get("capturas_total", 0),
