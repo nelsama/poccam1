@@ -12,6 +12,18 @@ display en particular.
 > visión **solo cuando hay un cambio** (no periódicamente). Esto ahorra ~99% del
 > costo de análisis. Este backend es la "alarma" que decide cuándo disparar.
 
+## 📚 Documentación
+
+| Documento | Contenido |
+|---|---|
+| **`README.md`** (este) | Qué hace, cómo usarlo, pipeline, parámetros y calibración |
+| **[`API.md`](API.md)** | **Referencia de la API HTTP**: endpoints, campos, ejemplos y SSE |
+| **[`ARQUITECTURA.md`](ARQUITECTURA.md)** | Diseño interno: módulos, hilos, decisiones y deudas técnicas |
+| **`postman_collection.json`** | Colección de Postman lista para importar (30 requests) |
+
+La API de configuración/estado (solo JSON) es consumible desde otro equipo de
+la red y **no expone la imagen de cámara**. Ver `API.md` para el contrato.
+
 ## ✨ Qué incluye
 
 - **Panel web** (`http://localhost:5000`) para:
@@ -32,13 +44,19 @@ backend/
 ├── config.py        ← configuración (dataclass + YAML, guardado en vivo)
 ├── capturador.py    ← fuente de imágenes: pantalla, cámara USB/IP, MJPEG
 ├── detector.py      ← pipeline de detección (ROI, vibración, diff, filtros)
-├── web.py           ← panel web: ROI, parámetros en vivo, log, capturas
-└── registrador.py   ← log JSONL + guardado de imágenes de eventos
+├── ia.py            ← análisis por visión (DeepSeek) + prompt editable
+├── web.py           ← panel web + API (ROI, parámetros en vivo, log, IA)
+└── registrador.py   ← log JSONL + guardado de imágenes y análisis
 main.py              ← bucle principal del backend
 config.yaml          ← parámetros editables (se regenera al guardar desde la web)
+README.md            ← esta guía
+API.md               ← referencia de la API HTTP
+ARQUITECTURA.md      ← diseño interno del proyecto
+postman_collection.json ← colección de Postman de la API
 eventos.jsonl        ← SE GENERA: log de eventos (1 línea JSON por evento)
 capturas_cambio/     ← SE GENERA: imágenes de los eventos
 roi.json             ← SE GENERA: el área de análisis definida en la web
+analisis_ia/         ← SE GENERA: JSON de los análisis de IA
 ```
 
 ## 🚀 Inicio Rápido
