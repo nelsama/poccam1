@@ -1,0 +1,561 @@
+{
+  "info": {
+    "name": "CapturaImagen - Detector de Cambios",
+    "description": "API del backend detector de cambios en paneles industriales.\n\n## Convención\n- La API pública es SOLO de configuración/estado (JSON). NO expone la imagen de cámara: `/video` y `/capturas/*` son del panel web interno.\n- Sin autenticación (PoC): no exponer fuera de la red local.\n\n## Variables\n- `{{base_url}}` → por defecto `http://127.0.0.1:5000`. Cambiar a `http://IP-DEL-SERVIDOR:5000` para usar desde otro equipo.\n\n## Nota sobre SSE\nLos endpoints Server-Sent Events (`/api/eventos`, `/api/config-eventos`, `/api/estado`, `/api/eventos-analisis`) mantienen la conexión abierta y empujan datos. En Postman se pueden abrir, pero no se cierran solos; usar \"Send\" y cancelar manualmente, o probarlos desde el navegador/terminal con `curl -N`.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://127.0.0.1:5000",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "1. Configuración",
+      "description": "Leer y sobrescribir parámetros. Todo cambio se aplica en vivo y dispara el SSE /api/config-eventos.",
+      "item": [
+        {
+          "name": "Leer parámetros (GET /api/config)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": ["{{base_url}}"],
+              "path": ["api", "config"]
+            },
+            "description": "Devuelve TODOS los parámetros actuales (captura, detección, web, registro, IA) + `presets` por resolución + `camara_resolucion` y `preset_aplicado`."
+          }
+        },
+        {
+          "name": "Estado completo (GET /api/estado-sistema)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/estado-sistema",
+              "host": ["{{base_url}}"],
+              "path": ["api", "estado-sistema"]
+            },
+            "description": "Estado actual completo: `config` + `runtime` (camara_viva, camara_resolucion, preset_aplicado, rotacion_efectiva, roi, ia_activa, capturas, cambios). Solo lectura."
+          }
+        },
+        {
+          "name": "Escribir parámetros de detección",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"deteccion\": {\n    \"metodo\": \"ssim\",\n    \"umbral\": 0.5,\n    \"min_area_px\": 350,\n    \"blur_ksize\": 9,\n    \"frames_estables\": 2,\n    \"min_intervalo_eventos\": 1.0,\n    \"alinear_imagenes\": false,\n    \"max_desplazamiento\": 30.0,\n    \"marcar_cambios\": false\n  }\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": ["{{base_url}}"],
+              "path": ["api", "config"]
+            },
+            "description": "Sobrescribe parámetros de DETECCIÓN en vivo (parcial: solo los campos enviados). Se persiste en config.yaml."
+          }
+        },
+        {
+          "name": "Escribir parámetros de captura",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"captura\": {\n    \"intervalo_segundos\": 0.5,\n    \"rotacion\": 90,\n    \"reconectar_segundos\": 180.0,\n    \"nombre_camara\": \"panel-1\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": ["{{base_url}}"],
+              "path": ["api", "config"]
+            },
+            "description": "Sobrescribe parámetros de CAPTURA en vivo: `intervalo_segundos`, `rotacion` (0/90/180/270), `reconectar_segundos`, `nombre_camara`."
+          }
+        },
+        {
+          "name": "Cambiar cámara EN VIVO (URL)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"captura\": {\n    \"fuente\": \"camara\",\n    \"camara_fuente\": \"http://172.26.10.201:8080/video\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": ["{{base_url}}"],
+              "path": ["api", "config"]
+            },
+            "description": "Cambia la cámara y recrea el capturador AL INSTANTE (sin reiniciar el proceso).\n\n- Éxito: `{\"ok\": true}`\n- Si la cámara nueva no abre: `502` y **se mantiene la cámara anterior** funcionando.\n- Formatos válidos de `camara_fuente`: URL HTTP/MJPEG (`http://IP:8080/video`), RTSP (`rtsp://IP:554/...`), índice USB (`0`)."
+          }
+        },
+        {
+          "name": "Rotación de imagen",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"rotacion\": 90\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/rotacion",
+              "host": ["{{base_url}}"],
+              "path": ["api", "rotacion"]
+            },
+            "description": "Fija la rotación de la imagen: 0, 90, 180 o 270 (sentido horario). Aplica en vivo y persiste."
+          }
+        },
+        {
+          "name": "Leer rotación actual",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": ["{{base_url}}"],
+              "path": ["api", "config"]
+            },
+            "description": "La rotación actual está en `captura.rotacion` de este endpoint (no existe GET /api/rotacion; esa ruta es solo POST)."
+          }
+        },
+        {
+          "name": "Recargar valores por defecto (preset VGA)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"deteccion\": {\n    \"metodo\": \"ssim\",\n    \"umbral\": 0.5,\n    \"min_area_px\": 50,\n    \"blur_ksize\": 5,\n    \"marcar_cambios\": false,\n    \"frames_estables\": 2,\n    \"min_intervalo_eventos\": 1.0,\n    \"alinear_imagenes\": false,\n    \"max_desplazamiento\": 10.0\n  }\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": ["{{base_url}}"],
+              "path": ["api", "config"]
+            },
+            "description": "Valores de partida para 640x480 (para volver rápido a una config conocida)."
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Área de análisis (ROI)",
+      "description": "Región del video que se analiza. Si no hay ROI, se analiza el frame completo.",
+      "item": [
+        {
+          "name": "Leer ROI",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/roi",
+              "host": ["{{base_url}}"],
+              "path": ["api", "roi"]
+            },
+            "description": "`{\"region\": [left, top, width, height]}` o `{\"region\": null}` si no hay área definida."
+          }
+        },
+        {
+          "name": "Definir ROI",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"region\": [321, 173, 179, 48]\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/roi",
+              "host": ["{{base_url}}"],
+              "path": ["api", "roi"]
+            },
+            "description": "Define el rectángulo de análisis en píxeles de la imagen (considerando la rotación aplicada). Formato: `[left, top, width, height]`."
+          }
+        },
+        {
+          "name": "Eliminar ROI",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/roi",
+              "host": ["{{base_url}}"],
+              "path": ["api", "roi"]
+            },
+            "description": "Borra el área de análisis (vuelve a analizar todo el frame)."
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Análisis IA (DeepSeek Vision)",
+      "description": "Análisis por visión de la imagen cuando se detecta un cambio. La IA arranca DETENIDA por defecto.",
+      "item": [
+        {
+          "name": "Estado IA",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/ia",
+              "host": ["{{base_url}}"],
+              "path": ["api", "ia"]
+            },
+            "description": "`{\"enabled\": bool, \"model\": \"...\", \"detail\": \"...\"}`"
+          }
+        },
+        {
+          "name": "Activar análisis IA",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"enabled\": true\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/ia",
+              "host": ["{{base_url}}"],
+              "path": ["api", "ia"]
+            },
+            "description": "Activa el análisis IA en la sesión actual (no persiste: al reiniciar vuelve a estar detenido)."
+          }
+        },
+        {
+          "name": "Desactivar análisis IA",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"enabled\": false\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/ia",
+              "host": ["{{base_url}}"],
+              "path": ["api", "ia"]
+            },
+            "description": "Detiene el análisis IA en la sesión actual."
+          }
+        },
+        {
+          "name": "Leer prompt IA",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/ia/prompt",
+              "host": ["{{base_url}}"],
+              "path": ["api", "ia", "prompt"]
+            },
+            "description": "Devuelve el prompt (system) actual que se envía a la IA. Define la estructura del JSON de respuesta."
+          }
+        },
+        {
+          "name": "Guardar prompt IA",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"prompt\": \"Analiza la imagen del panel industrial. Responde SOLO con un JSON con esta estructura exacta:\\n{\\n  \\\"hay_persona\\\": false,\\n  \\\"descripcion\\\": \\\"\\\",\\n  \\\"confianza\\\": 0.0\\n}\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/ia/prompt",
+              "host": ["{{base_url}}"],
+              "path": ["api", "ia", "prompt"]
+            },
+            "description": "Guarda el prompt en vivo (afecta al próximo análisis). NOTA: el backend NO impone estructura; la defines vos en este prompt. Se guarda en `ia_prompt.txt`."
+          }
+        },
+        {
+          "name": "Listar prompts guardados",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/ia/prompts-hist",
+              "host": ["{{base_url}}"],
+              "path": ["api", "ia", "prompts-hist"]
+            },
+            "description": "Historial de prompts guardados (máx 10), más reciente primero."
+          }
+        },
+        {
+          "name": "Guardar prompt en historial",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"prompt\": \"Prompt que quiero guardar para reutilizar\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/ia/prompts-hist",
+              "host": ["{{base_url}}"],
+              "path": ["api", "ia", "prompts-hist"]
+            },
+            "description": "Agrega un prompt al historial (sin duplicados, máx 10)."
+          }
+        },
+        {
+          "name": "Eliminar prompt del historial",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"prompt\": \"Prompt a eliminar\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/ia/prompts-hist/delete",
+              "host": ["{{base_url}}"],
+              "path": ["api", "ia", "prompts-hist", "delete"]
+            },
+            "description": "Elimina un prompt del historial por su contenido exacto."
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Datos y resultados",
+      "description": "Capturas, eventos y análisis generados (solo JSON/URLs; no devuelve imagen binaria salvo /capturas, que es del panel interno).",
+      "item": [
+        {
+          "name": "Últimas capturas",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/ultimas",
+              "host": ["{{base_url}}"],
+              "path": ["api", "ultimas"]
+            },
+            "description": "Las 2 imágenes de eventos más recientes: `{archivo, url, fecha}`."
+          }
+        },
+        {
+          "name": "Log de eventos",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/log",
+              "host": ["{{base_url}}"],
+              "path": ["api", "log"]
+            },
+            "description": "Últimos eventos detectados con área de píxeles, score y sugerencia de ajuste de parámetros. `min_area_px` es el valor EN VIVO."
+          }
+        },
+        {
+          "name": "Limpiar log de eventos",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/log",
+              "host": ["{{base_url}}"],
+              "path": ["api", "log"]
+            },
+            "description": "Vacía `eventos.jsonl` (el archivo en disco)."
+          }
+        },
+        {
+          "name": "Últimos análisis IA",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/analisis",
+              "host": ["{{base_url}}"],
+              "path": ["api", "analisis"]
+            },
+            "description": "Últimos análisis JSON de la IA (máx 10), con su timestamp y el contenido que devolvió el modelo."
+          }
+        }
+      ]
+    },
+    {
+      "name": "5. SSE (notificaciones en vivo)",
+      "description": "Server-Sent Events. Mantienen la conexión abierta. En Postman: Send y cancelar manualmente. Alternativa: `curl -N {{base_url}}/api/eventos`.",
+      "item": [
+        {
+          "name": "SSE: capturas nuevas",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "text/event-stream"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/eventos",
+              "host": ["{{base_url}}"],
+              "path": ["api", "eventos"]
+            },
+            "description": "Empuja `data: <contador>` cada vez que se registra una captura nueva."
+          }
+        },
+        {
+          "name": "SSE: cambios de configuración",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "text/event-stream"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/config-eventos",
+              "host": ["{{base_url}}"],
+              "path": ["api", "config-eventos"]
+            },
+            "description": "Empuja un aviso cada vez que la configuración cambia (desde el panel o desde la API). Es el mecanismo de sincronización para clientes externos."
+          }
+        },
+        {
+          "name": "SSE: estado del detector (vibración)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "text/event-stream"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/estado",
+              "host": ["{{base_url}}"],
+              "path": ["api", "estado"]
+            },
+            "description": "Empuja cada ~1 s: `{alinear, dy, dx, activo, margen, area_interior, area_borde}` (compensación de vibración)."
+          }
+        },
+        {
+          "name": "SSE: análisis IA nuevos",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "text/event-stream"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/eventos-analisis",
+              "host": ["{{base_url}}"],
+              "path": ["api", "eventos-analisis"]
+            },
+            "description": "Empuja un aviso cuando hay un análisis IA nuevo guardado."
+          }
+        }
+      ]
+    },
+    {
+      "name": "6. Panel interno (NO es API pública)",
+      "description": "Estos sirven la IMAGEN y el panel HTML. No forman parte del contrato para clientes externos.",
+      "item": [
+        {
+          "name": "Panel web (HTML)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/",
+              "host": ["{{base_url}}"],
+              "path": [""]
+            },
+            "description": "Página del panel (video en vivo, ROI, parámetros, IA)."
+          }
+        },
+        {
+          "name": "Video en vivo (MJPEG) - interno",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/video",
+              "host": ["{{base_url}}"],
+              "path": ["video"]
+            },
+            "description": "Stream MJPEG en vivo con el ROI dibujado. Uso interno del panel; NO exponer como API."
+          }
+        },
+        {
+          "name": "Captura de evento (imagen) - interno",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/capturas/evento_20260803_120000_000_original.png",
+              "host": ["{{base_url}}"],
+              "path": ["capturas", "evento_20260803_120000_000_original.png"]
+            },
+            "description": "Sirve el PNG de un evento. Uso interno del panel; NO exponer como API."
+          }
+        }
+      ]
+    }
+  ]
+}
