@@ -66,10 +66,16 @@ class CapturadorCamara:
          el hilo intenta reconectar (no muere en cada corte de WiFi).
     """
 
-    def __init__(self, fuente, nombre="camara", timeout_segundos=5):
+    def __init__(self, fuente, nombre="camara", timeout_segundos=5,
+                 reconectar_cada=180.0):
         self.fuente = fuente
         self.nombre = nombre
         self.timeout = timeout_segundos
+        # Cada cuántos segundos reabrir el stream. FFMPEG/RTSP acumula
+        # buffer interno que no se puede drenar desde OpenCV, así que la
+        # reconexión periódica es el modo estándar de evitar el desfase
+        # acumulativo (0 = nunca; solo reconecta si el stream falla).
+        self.reconectar_cada = float(reconectar_cada or 0)
         self._frame: np.ndarray | None = None
         self._ultimo_error = None
         self._lock = threading.Lock()
@@ -112,7 +118,9 @@ class CapturadorCamara:
 
     def _consumir_stream(self):
         """Hilo: lee el stream continuamente y conserva el último frame.
-        Si el stream se corta, cierra y relanza el VideoCapture."""
+        Si el stream se corta —o si toca la reconexión periódica— cierra
+        y relanza el VideoCapture para evitar el desfase acumulativo."""
+        import time as _t
         while not self._detener.is_set():
             try:
                 cap = self._abrir_cap()
@@ -121,6 +129,7 @@ class CapturadorCamara:
                 if not self._detener.is_set():
                     time.sleep(1.0)  # pausa entre reintentos de apertura
                 continue
+            inicio = _t.monotonic()
             while not self._detener.is_set():
                 try:
                     ret, frame = cap.read()
@@ -133,9 +142,13 @@ class CapturadorCamara:
                 else:
                     # Frame caído (corte WiFi/RTSP): salir para reconectar
                     break
+                # Reconexión periódica: corta el buffer acumulado
+                if self.reconectar_cada and \
+                        (_t.monotonic() - inicio) >= self.reconectar_cada:
+                    break
             cap.release()
             if not self._detener.is_set():
-                time.sleep(0.5)
+                time.sleep(0.3)
 
     def capturar(self) -> np.ndarray:
         with self._lock:
@@ -164,10 +177,14 @@ class CapturadorMJPEG:
     Resultado: el cambio se detecta en milisegundos, no en segundos.
     """
 
-    def __init__(self, fuente, nombre="camara", timeout_segundos=5):
+    def __init__(self, fuente, nombre="camara", timeout_segundos=5,
+                 reconectar_cada=180.0):
         self.fuente = fuente
         self.nombre = nombre
         self.timeout = timeout_segundos
+        # Reabrir el stream cada N segundos corta cualquier backlog
+        # persistente (antídoto estándar contra el desfase). 0 = nunca.
+        self.reconectar_cada = float(reconectar_cada or 0)
         self._frame: np.ndarray | None = None
         self._lock = threading.Lock()
         self._detener = threading.Event()
@@ -193,8 +210,11 @@ class CapturadorMJPEG:
             )
 
     def _consumir_stream(self):
-        """Hilo: lee el MJPEG y guarda siempre el frame más nuevo."""
+        """Hilo: lee el MJPEG y guarda siempre el frame más nuevo.
+        Reabre el stream cada `reconectar_cada` segundos para cortar
+        cualquier backlog persistente."""
         import urllib.request
+        import time as _t
 
         while not self._detener.is_set():
             try:
@@ -203,37 +223,62 @@ class CapturadorMJPEG:
                     req, timeout=self.timeout
                 ) as resp:
                     contenido = bytearray()
+                    inicio = _t.monotonic()
                     while not self._detener.is_set():
-                        chunk = resp.read(65536)
+                        # Chunk grande: vaciar el socket rápido y evitar
+                        # que el backlog de red genere desfase
+                        chunk = resp.read(262144)
                         if not chunk:
                             break
                         contenido += chunk
                         self._extraer_frames(contenido)
+                        # Reconexión periódica: si toca, cortar el stream
+                        if self.reconectar_cada and \
+                                (_t.monotonic() - inicio) >= self.reconectar_cada:
+                            break
             except Exception as e:  # noqa: BLE001 — intencional: reconexión
                 self._ultimo_error = str(e)
             # Reconectar tras una pausa corta si se cortó el stream
             if not self._detener.is_set():
-                time.sleep(1.0)
+                time.sleep(0.3)
 
     def _extraer_frames(self, buffer: bytearray):
         """
-        Extrae los JPEG del flujo MJPEG (delimitados por marcadores
-        SOI 0xFFD8 y EOI 0xFFD9) y conserva solo el último decodificado.
+        Extrae los JPEG del flujo MJPEG (SOI 0xFFD8 ... EOI 0xFFD9).
+
+        Antídoto contra el DESFASE ACUMULATIVO: si el buffer tiene varios
+        JPEG pendientes, se DESCARTAN todos menos el último y solo se
+        decodifica ese. Así el frame que se guarda es siempre el más
+        reciente y el backlog no se acumula (si se decodificaran todos
+        uno a uno, se procesaría la cola vieja y el retraso crecería).
         """
         import cv2
 
+        # Ubicar todos los JPEG del buffer
         inicio = buffer.find(b"\xff\xd8")
         fin = buffer.find(b"\xff\xd9", inicio + 2)
+        ultimo = None
         while inicio != -1 and fin != -1:
-            jpeg = bytes(buffer[inicio:fin + 2])
-            del buffer[:fin + 2]
-            arr = np.frombuffer(jpeg, dtype=np.uint8)
-            frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-            if frame is not None:
-                with self._lock:
-                    self._frame = frame
-            inicio = buffer.find(b"\xff\xd8")
+            ultimo = (inicio, fin)
+            inicio = buffer.find(b"\xff\xd8", fin + 2)
             fin = buffer.find(b"\xff\xd9", inicio + 2)
+
+        if ultimo is None:
+            # Sin JPEG completo: si el buffer creció demasiado (stream
+            # corrupto o desincronizado), recortarlo para no agotar RAM.
+            if len(buffer) > 8 * 1024 * 1024:
+                del buffer[:-1024]
+            return
+
+        inicio, fin = ultimo
+        jpeg = bytes(buffer[inicio:fin + 2])
+        # Descartar TODO lo que ya se consumió (incluye los JPEG viejos)
+        del buffer[:fin + 2]
+        arr = np.frombuffer(jpeg, dtype=np.uint8)
+        frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        if frame is not None:
+            with self._lock:
+                self._frame = frame
 
     def capturar(self) -> np.ndarray:
         with self._lock:
@@ -262,9 +307,14 @@ def crear_capturador(config) -> Union[
 
         # Streams HTTP (MJPEG) → capturador de baja latencia
         if fuente.lower().startswith(("http://", "https://")):
-            return CapturadorMJPEG(fuente, nombre=config.nombre_camara)
+            return CapturadorMJPEG(fuente, nombre=config.nombre_camara,
+                                   reconectar_cada=getattr(
+                                       config, "reconectar_segundos", 180.0))
 
-        # RTSP y otros → OpenCV con reconexión
-        return CapturadorCamara(fuente, nombre=config.nombre_camara)
+        # RTSP y otros → OpenCV/FFMPEG con reconexión automática y
+        # periódica (corta el buffer acumulado: evita el desfase)
+        return CapturadorCamara(
+            fuente, nombre=config.nombre_camara,
+            reconectar_cada=getattr(config, "reconectar_segundos", 180.0))
 
     return CapturadorPantalla(config.region, config.monitor)

@@ -9,6 +9,7 @@ captura:
   intervalo_segundos: 0.25
   aplicar_preset_al_iniciar: true
   rotacion: 90
+  reconectar_segundos: 180.0
 deteccion:
   metodo: ssim
   umbral: 0.5
@@ -32,5 +33,4 @@ registro:
 ia:
   enabled: false
   model: deepseek-v4-flash-vision-exp
-  api_key: sk-0fa8d5229dd549d89a78b462cf363236
   detail: low

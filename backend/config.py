@@ -23,6 +23,8 @@ class Config:
         # stream y aplica el preset correspondiente de PRESETS_CAMARA
     rotacion: int = 0           # rotación de la imagen: 0 | 90 | 180 | 270
                                 # (en el sentido horario)
+    reconectar_segundos: float = 180.0  # reabrir el stream cada N segundos
+        # para cortar el buffer acumulado (RTSP/otros). 0 = nunca.
 
     # Detección
     metodo: str = "ssim"            # ssim | diff | mse
@@ -79,6 +81,8 @@ class Config:
         cfg.aplicar_preset_al_iniciar = c.get(
             "aplicar_preset_al_iniciar", cfg.aplicar_preset_al_iniciar)
         cfg.rotacion = int(c.get("rotacion", cfg.rotacion)) % 360
+        cfg.reconectar_segundos = float(
+            c.get("reconectar_segundos", cfg.reconectar_segundos))
 
         d = raw.get("deteccion", {})
         cfg.metodo = d.get("metodo", cfg.metodo)
@@ -136,6 +140,7 @@ class Config:
                 "intervalo_segundos": self.intervalo_segundos,
                 "aplicar_preset_al_iniciar": self.aplicar_preset_al_iniciar,
                 "rotacion": int(self.rotacion),
+                "reconectar_segundos": self.reconectar_segundos,
             },
             "deteccion": {
                 "metodo": self.metodo,
@@ -163,7 +168,10 @@ class Config:
             "ia": {
                 "enabled": self.ia_enabled,
                 "model": self.ia_model,
-                "api_key": self.ia_api_key,
+                # NOTA: la API key NO se serializa aquí a propósito, para
+                # que nunca se escriba a config.yaml (que sí va a git).
+                # Se lee de la variable de entorno DEEPSEEK_API_KEY o del
+                # archivo ia.key (ignorado por git).
                 "detail": self.ia_detail,
             },
         }
