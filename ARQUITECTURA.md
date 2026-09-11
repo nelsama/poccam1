@@ -134,16 +134,48 @@ GET /capturas/<nombre> → sirve una imagen (protegido contra rutas fuera de la 
 | `/api/ultimas` | GET | — | `{"capturas":[{archivo,url,fecha},...]}` |
 | `/api/log` | GET | — | `{"min_area_px":N, "eventos":[...]}` con sugerencias |
 | `/api/log` | DELETE | — | `{"ok":true}` (vacía el JSONL) |
-| `/api/config` | GET | — | config completa (`config.a_dict()`) |
-| `/api/config` | POST | `{"captura":{...},"deteccion":{...}}` (parcial) | `{"ok":true}` o `400 {"error":...}` |
+| `/api/config` | GET | — | parámetros completos (`config.a_dict()`) + `presets` + `camara_resolucion` |
+| `/api/config` | POST | `{"captura":{...},"deteccion":{...}}` (parcial) | `{"ok":true}` · `400` valor inválido · `502` si la cámara nueva no abre |
+| `/api/estado-sistema` | GET | — | estado completo (solo lectura): `{config, runtime{camara_viva, camara_resolucion, preset_aplicado, rotacion_efectiva, roi, ia_activa, capturas, cambios}}` |
+| `/api/rotacion` | POST | `{"rotacion": 0\|90\|180\|270}` | `{"ok":true,"rotacion":N}` |
 | `/api/eventos` | GET | — | SSE: `data: <contador>` cuando hay captura nueva |
+| `/api/config-eventos` | GET | — | SSE: avisa cuando la CONFIGURACIÓN cambió (panel o cliente externo) |
 | `/api/estado` | GET | — | SSE (cada ~1 s): `{"alinear":bool, "dy", "dx", "activo", "margen", "area_interior", "area_borde"}` |
-| `/video` | GET | — | MJPEG multipart (`multipart/x-mixed-replace`) |
-| `/capturas/<nombre>` | GET | — | PNG del evento |
+| `/video` | GET | — | MJPEG multipart (**solo panel interno; NO forma parte de la API pública**) |
+| `/capturas/<nombre>` | GET | — | PNG del evento (**solo panel interno; NO forma parte de la API pública**) |
 
-El frontend usa `EventSource` para `/api/eventos` y `/api/estado` (notificación
-push) y `fetch` para el resto. **No hay polling**: las capturas se actualizan
-solo cuando el servidor avisa.
+El frontend usa `EventSource` para `/api/eventos`, `/api/config-eventos` y
+`/api/estado` (notificación push) y `fetch` para el resto. **No hay polling**:
+las capturas y la configuración se actualizan solo cuando el servidor avisa.
+
+### API pública de configuración (para clientes externos)
+
+La API de configuración/estado (solo JSON) es consumible desde otro equipo de
+la red. **No expone imagen de cámara**: `/video` y `/capturas/*` son del panel
+interno.
+
+- **Consultar parámetros**: `GET /api/config` (o `GET /api/estado-sistema`
+  para incluir el estado de runtime).
+- **Sobrescribir parámetros**: `POST /api/config` con un subconjunto parcial.
+  Acepta **todos** los parámetros de captura (`intervalo_segundos`,
+  `rotacion`, `reconectar_segundos`, `nombre_camara`) y de detección.
+- **Cambiar la cámara**: incluir `camara_fuente` (y opcionalmente `fuente`)
+  recrea el capturador **en vivo** (sin reiniciar el proceso). Si la cámara
+  nueva no abre, se mantiene la anterior y responde `502`.
+- **Sincronización**: todo cambio dispara el SSE `/api/config-eventos`, que el
+  panel escucha para reflejar los cambios externos automáticamente (sin
+  recargar la página).
+
+Ejemplo de inyección desde otro equipo:
+
+```bash
+curl -X POST http://IP-DEL-SERVIDOR:5000/api/config \
+  -H "Content-Type: application/json" \
+  -d '{"camara_fuente": "http://192.168.1.50:8080/video", "captura": {"rotacion": 90, "intervalo_segundos": 1.0}}'
+```
+
+> Sin autenticación en esta PoC: cualquier equipo de la red local puede leer y
+> escribir la configuración. No exponer fuera de la red local.
 
 ## 6. Persistencia
 

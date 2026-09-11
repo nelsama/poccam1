@@ -36,6 +36,20 @@ _condicion_capturas = threading.Condition()
 _contador_analisis = 0
 _condicion_analisis = threading.Condition()
 
+# Notificador de cambios de CONFIGURACIÓN (para que el panel se refleje
+# cuando un cliente externo modifica parámetros por API)
+_contador_config = 0
+_condicion_config = threading.Condition()
+
+
+def notificar_config_cambiada():
+    """Avisa al panel que la configuración cambió (desde el panel o desde
+    un cliente externo por API) para que refresque sus valores."""
+    global _contador_config
+    with _condicion_config:
+        _contador_config += 1
+        _condicion_config.notify_all()
+
 
 def notificar_analisis_nuevo(_ruta=None):
     """Llama el registrador cuando se guarda un análisis de IA nuevo."""
@@ -141,8 +155,13 @@ PRESETS_CAMARA = [
 ]
 
 
-def _aplicar_config(datos: dict, config, detector):
+def _aplicar_config(datos: dict, config, detector, monitor=None):
     """Valida y aplica captura/detección en caliente, y persiste en YAML.
+
+    Acepta todos los parámetros de captura, incluidos `camara_fuente` y
+    `fuente`: si cambia la cámara, se recrea el capturador EN VIVO (sin
+    reiniciar el proceso) vía `monitor.cambiar_fuente()`. Si la nueva
+    cámara no abre, se mantiene la anterior y se lanza RuntimeError.
 
     Lanza ValueError/TypeError si algún valor es inválido (el llamador
     lo convierte en HTTP 400).
@@ -154,6 +173,31 @@ def _aplicar_config(datos: dict, config, detector):
         if v <= 0:
             raise ValueError("intervalo_segundos debe ser > 0")
         config.intervalo_segundos = v
+    if "rotacion" in c:
+        v = int(c["rotacion"]) % 360
+        if v not in (0, 90, 180, 270):
+            raise ValueError("rotacion debe ser 0, 90, 180 o 270")
+        config.rotacion = v
+    if "reconectar_segundos" in c:
+        v = float(c["reconectar_segundos"])
+        if v < 0:
+            raise ValueError("reconectar_segundos debe ser >= 0")
+        config.reconectar_segundos = v
+    if "nombre_camara" in c:
+        config.nombre_camara = str(c["nombre_camara"])
+
+    # Cambio de fuente de cámara: se aplica al final (recrea el capturador)
+    nueva_fuente = None
+    nuevo_tipo = None
+    if "fuente" in c:
+        tipo = str(c["fuente"])
+        if tipo not in ("camara", "pantalla"):
+            raise ValueError("fuente debe ser 'camara' o 'pantalla'")
+        nuevo_tipo = tipo
+    if "camara_fuente" in c:
+        nueva_fuente = str(c["camara_fuente"]).strip()
+        if not nueva_fuente:
+            raise ValueError("camara_fuente no puede estar vacía")
 
     # ── Detección: validar todo primero, aplicar después ──
     d = datos.get("deteccion") or {}
@@ -188,7 +232,25 @@ def _aplicar_config(datos: dict, config, detector):
     for clave, valor in nuevos.items():
         setattr(config, clave, valor)
 
+    # Cambio de cámara EN CALIENTE (después de todo lo demás).
+    # Si falla, cambia_fuente revierte la config y propaga el error.
+    if nueva_fuente is not None or nuevo_tipo is not None:
+        if monitor is None:
+            # Sin monitor no se puede recrear: solo guardar el valor
+            if nuevo_tipo is not None:
+                config.fuente = nuevo_tipo
+            if nueva_fuente is not None:
+                config.camara_fuente = nueva_fuente
+        else:
+            monitor.cambiar_fuente(
+                nueva_fuente if nueva_fuente is not None
+                else config.camara_fuente,
+                tipo_fuente=nuevo_tipo if nuevo_tipo is not None
+                else config.fuente,
+            )
+
     config.guardar()  # persiste en config.yaml
+    notificar_config_cambiada()
 
 
 def cargar_roi():
@@ -1237,6 +1299,21 @@ const fuenteAnalisis = new EventSource('/api/eventos-analisis');
 fuenteAnalisis.onmessage = () => { actualizarAnalisis(); };
 fuenteAnalisis.onerror = () => { /* reconecta solo */ };
 
+// Aviso cuando la CONFIGURACIÓN cambió (por el panel o por un cliente
+// externo vía API): se refrescan los valores del formulario y la
+// rotación, sin recargar la página.
+const fuenteConfig = new EventSource('/api/config-eventos');
+fuenteConfig.onmessage = () => {
+  // No pisar lo que el usuario está editando en este momento
+  const activo = document.activeElement;
+  const editando = activo && (activo.tagName === 'INPUT' ||
+                              activo.tagName === 'TEXTAREA' ||
+                              activo.tagName === 'SELECT');
+  if (editando) return;
+  cargarParams(); leerRotacion(); cargarPresets();
+};
+fuenteConfig.onerror = () => { /* reconecta solo */ };
+
 imagen.src = '/video';
 </script>
 </body>
@@ -1244,11 +1321,13 @@ imagen.src = '/video';
 """
 
 
-def crear_app(capturador, config=None, detector=None):
+def crear_app(capturador, config=None, detector=None, monitor=None):
     """Crea la aplicación Flask conectada al capturador activo.
 
     `detector` es opcional: si se pasa, el panel muestra en vivo el
     desplazamiento estimado por la compensación de vibración.
+    `monitor` es el MonitorBackend (opcional): permite cambiar la fuente
+    de cámara en caliente desde la API sin reiniciar el proceso.
     """
     global RUTA_CAPTURAS
     if config is not None:
@@ -1362,13 +1441,20 @@ def crear_app(capturador, config=None, detector=None):
         """
         Aplica parámetros EN CALIENTE (sin reiniciar) y los persiste
         en config.yaml. Acepta {"captura": {...}, "deteccion": {...}}.
+
+        Si cambia `camara_fuente` o `fuente`, recrea el capturador al
+        instante (si la cámara nueva no abre, mantiene la anterior y
+        devuelve error).
         """
         if config is None:
             return jsonify({"error": "Configuración no disponible"}), 503
         datos = request.get_json(silent=True) or {}
         try:
-            _aplicar_config(datos, config, detector)
+            _aplicar_config(datos, config, detector, monitor=monitor)
             return jsonify({"ok": True})
+        except RuntimeError as e:
+            # Falló el cambio de cámara: el capturador anterior sigue vivo
+            return jsonify({"ok": False, "error": str(e)}), 502
         except (ValueError, TypeError) as e:
             return jsonify({"ok": False, "error": str(e)}), 400
 
@@ -1497,6 +1583,62 @@ def crear_app(capturador, config=None, detector=None):
         texto = datos.get("prompt", "")
         lista = elimina_prompt_historico(texto)
         return jsonify({"ok": True, "prompts": lista})
+
+    @app.route("/api/estado-sistema")
+    def api_estado_sistema():
+        """
+        ESTADO ACTUAL completo (solo lectura): parámetros de
+        configuración + datos de runtime. Pensado para clientes externos
+        que quieran conocer qué está pasando sin pedir la imagen.
+        """
+        if config is None:
+            return jsonify({"error": "Configuración no disponible"}), 503
+        camara_viva = False
+        capturas = cambios = 0
+        if monitor is not None:
+            capturas = getattr(monitor, "conteo_capturas", 0)
+            cambios = getattr(monitor, "conteo_cambios", 0)
+            try:
+                capturador = getattr(monitor, "capturador", None)
+                if capturador is not None:
+                    capturador.capturar()  # lanza si no hay frames
+                    camara_viva = True
+            except Exception:  # noqa: BLE001
+                camara_viva = False
+        return jsonify({
+            "config": config.a_dict(),
+            "runtime": {
+                "camara_viva": camara_viva,
+                "camara_resolucion": getattr(config, "camara_resolucion", None),
+                "preset_aplicado": getattr(config, "preset_aplicado", None),
+                "rotacion_efectiva": config.rotacion,
+                "roi": cargar_roi(),
+                "ia_activa": bool(config.ia_enabled),
+                "capturas": capturas,
+                "cambios": cambios,
+            },
+        })
+
+    @app.route("/api/config-eventos")
+    def api_config_eventos():
+        """SSE: avisa al panel cuando la configuración cambió (por el
+        propio panel o por un cliente externo), para que refresque sus
+        valores sin recargar la página."""
+        def generar():
+            ultimo = _contador_config
+            yield ": conectado\n\n"
+            while True:
+                with _condicion_config:
+                    _condicion_config.wait(timeout=30)
+                    cambio = _contador_config != ultimo
+                    if cambio:
+                        ultimo = _contador_config
+                if cambio:
+                    yield f"data: {ultimo}\n\n"
+
+        return Response(generar(), mimetype="text/event-stream",
+                        headers={"Cache-Control": "no-cache",
+                                 "X-Accel-Buffering": "no"})
 
     @app.route("/api/eventos-analisis")
     def api_eventos_analisis():

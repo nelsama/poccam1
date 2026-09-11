@@ -38,6 +38,11 @@ class MonitorBackend:
         self.config = config
         self._configurar_logging()
 
+        # Lock para intercambiar el capturador en caliente sin que el
+        # bucle de monitoreo lo esté usando a la vez (cambio de cámara
+        # por API sin reiniciar el proceso).
+        self._lock_capturador = threading.RLock()
+
         self.capturador = self._crear_capturador()
         self.detector = DetectorCambios(
             metodo=config.metodo,
@@ -92,6 +97,46 @@ class MonitorBackend:
                     logger.info("Abortado por el usuario.")
                     sys.exit(1)
 
+    def cambiar_fuente(self, fuente: str, tipo_fuente: str = "camara"):
+        """Cambia la cámara EN CALIENTE (sin reiniciar el proceso).
+
+        Crea el capturador nuevo PRIMERO: si falla (URL mal, cámara
+        apagada), mantiene el actual funcionando y lanza RuntimeError
+        para que el llamador (API) devuelva el error. Si el nuevo abre
+        bien, reemplaza y cierra el viejo.
+
+        El ROI y los contadores se conservan a propósito.
+        """
+        viejo = self.capturador
+        fuente_anterior = self.config.camara_fuente
+        tipo_anterior = self.config.fuente
+        self.config.fuente = tipo_fuente
+        self.config.camara_fuente = str(fuente)
+        try:
+            # No usar _crear_capturador (ese reintenta en bucle): aquí
+            # queremos fallar rápido y devolver el error.
+            nuevo = crear_capturador(self.config)
+        except RuntimeError as e:
+            # Revertir la config: el capturador viejo sigue en uso
+            self.config.fuente = tipo_anterior
+            self.config.camara_fuente = fuente_anterior
+            logger.error("❌ No se pudo abrir la nueva cámara: %s", e)
+            raise
+
+        with self._lock_capturador:
+            self.capturador = nuevo
+        try:
+            viejo.cerrar()
+        except Exception:  # noqa: BLE001 — el viejo ya no importa
+            pass
+        logger.info(f"📷 Fuente de cámara cambiada a: {fuente}")
+        # Con la cámara nueva cambia la resolución → re-detectar preset
+        try:
+            self._detectar_resolucion_y_preset()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"No se pudo re-detectar la resolución: {e}")
+        return True
+
     def _detectar_resolucion_y_preset(self):
         """Lee un frame del stream, detecta su resolución y aplica el
         preset del panel web que le corresponde (exacto o el más
@@ -137,7 +182,8 @@ class MonitorBackend:
         if not self.config.web_enabled:
             return
         from backend.web import crear_app
-        app = crear_app(self.capturador, config=self.config, detector=self.detector)
+        app = crear_app(self.capturador, config=self.config,
+                        detector=self.detector, monitor=self)
         hilo = threading.Thread(
             target=app.run,
             kwargs={"host": self.config.web_host,
@@ -187,7 +233,9 @@ class MonitorBackend:
                 inicio = time.monotonic()
 
                 # 1. PEDIR imagen a la cámara
-                imagen = self.capturador.capturar()
+                with self._lock_capturador:
+                    capturador = self.capturador
+                imagen = capturador.capturar()
                 self.conteo_capturas += 1
                 # Aplicar rotación configurada (0/90/180/270)
                 if self.config.rotacion:

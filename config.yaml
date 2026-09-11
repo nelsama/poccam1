@@ -6,7 +6,7 @@ captura:
   nombre_camara: panel-1
   region: null
   monitor: 1
-  intervalo_segundos: 0.25
+  intervalo_segundos: 0.5
   aplicar_preset_al_iniciar: true
   rotacion: 90
   reconectar_segundos: 180.0
