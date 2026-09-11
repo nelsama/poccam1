@@ -19,6 +19,10 @@ class Config:
     region: list | None = None   # [left, top, width, height] o None
     monitor: int = 1
     intervalo_segundos: float = 1.0  # ← cada cuánto pedir imagen a la cámara
+    aplicar_preset_al_iniciar: bool = True  # detecta la resolución del
+        # stream y aplica el preset correspondiente de PRESETS_CAMARA
+    rotacion: int = 0           # rotación de la imagen: 0 | 90 | 180 | 270
+                                # (en el sentido horario)
 
     # Detección
     metodo: str = "ssim"            # ssim | diff | mse
@@ -48,8 +52,11 @@ class Config:
     max_imagenes: int = 20        # máx. archivos en output_dir (0 = sin límite)
     nivel_log: str = "INFO"
 
-    # IA (futuro, por ahora sin uso)
-    ia_enabled: bool = False
+    # IA (análisis por visión de DeepSeek)
+    ia_enabled: bool = False     # enviar cada evento a DeepSeek Vision
+    ia_model: str = "deepseek-v4-flash-vision-exp"
+    ia_api_key: str = ""        # opcional; si vacío usa env DEEPSEEK_API_KEY o ia.key
+    ia_detail: str = "low"      # low (512px, más barato) | high | auto
 
     # Ruta del YAML que originó esta config (para guardar cambios en vivo)
     _ruta_yaml: str = "config.yaml"
@@ -69,6 +76,9 @@ class Config:
         cfg.region = c.get("region", cfg.region)
         cfg.monitor = c.get("monitor", cfg.monitor)
         cfg.intervalo_segundos = c.get("intervalo_segundos", cfg.intervalo_segundos)
+        cfg.aplicar_preset_al_iniciar = c.get(
+            "aplicar_preset_al_iniciar", cfg.aplicar_preset_al_iniciar)
+        cfg.rotacion = int(c.get("rotacion", cfg.rotacion)) % 360
 
         d = raw.get("deteccion", {})
         cfg.metodo = d.get("metodo", cfg.metodo)
@@ -96,6 +106,9 @@ class Config:
 
         ia = raw.get("ia", {})
         cfg.ia_enabled = ia.get("enabled", cfg.ia_enabled)
+        cfg.ia_model = ia.get("model", cfg.ia_model)
+        cfg.ia_api_key = ia.get("api_key", cfg.ia_api_key)
+        cfg.ia_detail = ia.get("detail", cfg.ia_detail)
 
         web = raw.get("web", {})
         cfg.web_enabled = web.get("enabled", cfg.web_enabled)
@@ -121,6 +134,8 @@ class Config:
                 "region": self.region,
                 "monitor": self.monitor,
                 "intervalo_segundos": self.intervalo_segundos,
+                "aplicar_preset_al_iniciar": self.aplicar_preset_al_iniciar,
+                "rotacion": int(self.rotacion),
             },
             "deteccion": {
                 "metodo": self.metodo,
@@ -145,7 +160,12 @@ class Config:
                 "max_imagenes": self.max_imagenes,
                 "nivel": self.nivel_log,
             },
-            "ia": {"enabled": self.ia_enabled},
+            "ia": {
+                "enabled": self.ia_enabled,
+                "model": self.ia_model,
+                "api_key": self.ia_api_key,
+                "detail": self.ia_detail,
+            },
         }
 
     def guardar(self, path: str | None = None):

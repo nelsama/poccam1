@@ -19,12 +19,16 @@ import sys
 import threading
 import time
 
-from backend.capturador import crear_capturador
+from backend.capturador import crear_capturador, rotar_frame
 from backend.config import Config
 from backend.detector import DetectorCambios
 from backend.registrador import RegistradorEventos
 
 logger = logging.getLogger("main")
+
+# Segundos de espera entre reintentos de conexión con la cámara
+# (si está apagada, sin red o el stream aún no arrancó).
+REINTENTO_SEGUNDOS = 5.0
 
 
 class MonitorBackend:
@@ -34,7 +38,7 @@ class MonitorBackend:
         self.config = config
         self._configurar_logging()
 
-        self.capturador = crear_capturador(config)
+        self.capturador = self._crear_capturador()
         self.detector = DetectorCambios(
             metodo=config.metodo,
             umbral=config.umbral,
@@ -45,7 +49,16 @@ class MonitorBackend:
             alinear_imagenes=config.alinear_imagenes,
             max_desplazamiento=config.max_desplazamiento,
         )
+        # El análisis IA arranca SIEMPRE DISPONIBLE pero DETENIDO:
+        # nunca se auto-activa al iniciar (para no gastar). El botón del
+        # panel lo activa por sesión. Esto sobreescribe el YAML.
+        self.config.ia_enabled = False
+
         self.registrador = RegistradorEventos(config)
+
+        # Detectar la resolución real del stream y aplicar el preset
+        # correspondiente (uno de PRESETS_CAMARA), si está habilitado.
+        self._detectar_resolucion_y_preset()
 
         self._iniciar_web()
         self._describir_configuracion()
@@ -53,6 +66,71 @@ class MonitorBackend:
         self.conteo_capturas = 0
         self.conteo_cambios = 0
         self._ultimo_evento = 0.0
+
+    def _crear_capturador(self):
+        """Crea el capturador con reintento.
+
+        Si la cámara no responde (apagada, sin red, stream no iniciado),
+        lo reintenta cada REINTENTO_SEGUNDOS en vez de terminar con un
+        traceback: así el backend queda esperando y arranca solo cuando
+        la cámara vuelve a estar disponible.
+        """
+        while True:
+            try:
+                return crear_capturador(self.config)
+            except RuntimeError as e:
+                logger.error(
+                    "❌ No se pudo abrir la fuente de imágenes: %s", e
+                )
+                logger.info(
+                    f"🔄 Reintentando en {REINTENTO_SEGUNDOS:.0f} s... "
+                    "(Ctrl+C para salir)"
+                )
+                try:
+                    time.sleep(REINTENTO_SEGUNDOS)
+                except KeyboardInterrupt:
+                    logger.info("Abortado por el usuario.")
+                    sys.exit(1)
+
+    def _detectar_resolucion_y_preset(self):
+        """Lee un frame del stream, detecta su resolución y aplica el
+        preset del panel web que le corresponde (exacto o el más
+        cercano). Solo aplica con fuente = cámara."""
+        if self.config.fuente != "camara":
+            return
+        from backend.web import buscar_preset
+
+        try:
+            frame = self.capturador.capturar()
+            alto, ancho = frame.shape[:2]
+        except Exception:
+            logger.warning(
+                "No se pudo leer un frame para detectar la resolución"
+            )
+            return
+
+        self.config.camara_resolucion = (ancho, alto)
+        preset = buscar_preset(ancho, alto)
+        if preset is None:
+            logger.info(f"📷 Resolución detectada: {ancho}x{alto} — sin preset")
+            return
+
+        self.config.preset_aplicado = preset["id"]
+        if self.config.aplicar_preset_al_iniciar:
+            # Aplicar el preset (valores de partida para esa resolución)
+            self.detector.actualizar(preset["deteccion"])
+            for clave, valor in preset["deteccion"].items():
+                setattr(self.config, clave, valor)
+            try:
+                self.config.guardar()
+            except OSError as e:
+                logger.warning(f"No se pudo persistir el preset: {e}")
+            logger.info(f"📷 Resolución detectada: {ancho}x{alto} → "
+                        f"preset '{preset['nombre']}' aplicado")
+        else:
+            logger.info(f"📷 Resolución detectada: {ancho}x{alto} → "
+                        f"preset '{preset['nombre']}' sugerido "
+                        "(aplicar_preset_al_iniciar: false)")
 
     def _iniciar_web(self):
         """Arranca el panel web (configuración del área de análisis)."""
@@ -111,6 +189,9 @@ class MonitorBackend:
                 # 1. PEDIR imagen a la cámara
                 imagen = self.capturador.capturar()
                 self.conteo_capturas += 1
+                # Aplicar rotación configurada (0/90/180/270)
+                if self.config.rotacion:
+                    imagen = rotar_frame(imagen, self.config.rotacion)
 
                 # 2. Comparar contra la anterior
                 resultado = self.detector.procesar(imagen)

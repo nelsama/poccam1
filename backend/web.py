@@ -10,10 +10,13 @@ en cada ciclo, así los cambios se aplican sin reiniciar el backend.
 """
 
 import json
+import logging
 import threading
 import time
 from datetime import datetime
 from pathlib import Path
+
+logger = logging.getLogger("backend")
 
 import cv2
 from flask import Flask, Response, jsonify, request, send_file
@@ -29,6 +32,18 @@ RUTA_CAPTURAS = RAIZ / "capturas_cambio"
 _contador_capturas = 0
 _condicion_capturas = threading.Condition()
 
+# Notificador de análisis IA nuevos (mismo patrón SSE)
+_contador_analisis = 0
+_condicion_analisis = threading.Condition()
+
+
+def notificar_analisis_nuevo(_ruta=None):
+    """Llama el registrador cuando se guarda un análisis de IA nuevo."""
+    global _contador_analisis
+    with _condicion_analisis:
+        _contador_analisis += 1
+        _condicion_analisis.notify_all()
+
 
 def notificar_captura_nueva():
     """Llama el registrador cuando guarda una imagen nueva."""
@@ -43,6 +58,137 @@ def _bool(v):
     if isinstance(v, str):
         return v.strip().lower() in ("1", "true", "si", "yes", "on")
     return bool(v)
+
+
+def buscar_preset(ancho: int, alto: int) -> dict | None:
+    """Devuelve el preset que coincide con la resolución del stream.
+
+    Si no hay coincidencia exacta, devuelve el más cercano por número
+    de píxeles (área). None si la resolución es inválida.
+    """
+    if not ancho or not alto:
+        return None
+    area = ancho * alto
+    for p in PRESETS_CAMARA:
+        if p["ancho"] == ancho and p["alto"] == alto:
+            return p
+    mejor = None
+    mejor_diff = None
+    for p in PRESETS_CAMARA:
+        diff = abs(p["ancho"] * p["alto"] - area)
+        if mejor_diff is None or diff < mejor_diff:
+            mejor_diff = diff
+            mejor = p
+    return mejor
+
+
+# Presets por resolución de cámara (puntos de partida calibrados sobre
+# 640x480). El mismo display ocupa más píxeles a mayor resolución:
+#   - min_area_px escala con el área (un dígito cambia más píxeles)
+#   - max_desplazamiento escala con la dimensión lineal (la misma
+#     vibración física se ve más grande)
+#   - blur_ksize escala suave con la dimensión lineal
+# El resto (metodo, umbral, frames_estables...) es independiente.
+PRESETS_CAMARA = [
+    {
+        "id": "vga", "nombre": "640x480 (VGA)",
+        "ancho": 640, "alto": 480,
+        "deteccion": {"metodo": "ssim", "umbral": 0.5, "min_area_px": 50,
+                      "blur_ksize": 5, "marcar_cambios": False,
+                      "frames_estables": 2, "min_intervalo_eventos": 1.0,
+                      "alinear_imagenes": False, "max_desplazamiento": 10.0},
+    },
+    {
+        "id": "hd720", "nombre": "1280x720 (HD ~1 MP)",
+        "ancho": 1280, "alto": 720,
+        "deteccion": {"metodo": "ssim", "umbral": 0.5, "min_area_px": 150,
+                      "blur_ksize": 7, "marcar_cambios": False,
+                      "frames_estables": 2, "min_intervalo_eventos": 1.0,
+                      "alinear_imagenes": False, "max_desplazamiento": 20.0},
+    },
+    {
+        "id": "fhd", "nombre": "1920x1080 (FullHD ~2 MP)",
+        "ancho": 1920, "alto": 1080,
+        "deteccion": {"metodo": "ssim", "umbral": 0.5, "min_area_px": 350,
+                      "blur_ksize": 9, "marcar_cambios": False,
+                      "frames_estables": 2, "min_intervalo_eventos": 1.0,
+                      "alinear_imagenes": False, "max_desplazamiento": 30.0},
+    },
+    {
+        "id": "mp4", "nombre": "2688x1520 (4 MP)",
+        "ancho": 2688, "alto": 1520,
+        "deteccion": {"metodo": "ssim", "umbral": 0.5, "min_area_px": 700,
+                      "blur_ksize": 11, "marcar_cambios": False,
+                      "frames_estables": 2, "min_intervalo_eventos": 1.0,
+                      "alinear_imagenes": False, "max_desplazamiento": 40.0},
+    },
+    {
+        "id": "mp5", "nombre": "2560x1920 (5 MP)",
+        "ancho": 2560, "alto": 1920,
+        "deteccion": {"metodo": "ssim", "umbral": 0.5, "min_area_px": 850,
+                      "blur_ksize": 11, "marcar_cambios": False,
+                      "frames_estables": 2, "min_intervalo_eventos": 1.0,
+                      "alinear_imagenes": False, "max_desplazamiento": 45.0},
+    },
+    {
+        "id": "k4", "nombre": "3840x2160 (4K ~8 MP)",
+        "ancho": 3840, "alto": 2160,
+        "deteccion": {"metodo": "ssim", "umbral": 0.5, "min_area_px": 1400,
+                      "blur_ksize": 13, "marcar_cambios": False,
+                      "frames_estables": 2, "min_intervalo_eventos": 1.0,
+                      "alinear_imagenes": False, "max_desplazamiento": 60.0},
+    },
+]
+
+
+def _aplicar_config(datos: dict, config, detector):
+    """Valida y aplica captura/detección en caliente, y persiste en YAML.
+
+    Lanza ValueError/TypeError si algún valor es inválido (el llamador
+    lo convierte en HTTP 400).
+    """
+    # ── Captura ──
+    c = datos.get("captura") or {}
+    if "intervalo_segundos" in c:
+        v = float(c["intervalo_segundos"])
+        if v <= 0:
+            raise ValueError("intervalo_segundos debe ser > 0")
+        config.intervalo_segundos = v
+
+    # ── Detección: validar todo primero, aplicar después ──
+    d = datos.get("deteccion") or {}
+    nuevos = {}
+    if "metodo" in d:
+        if d["metodo"] not in ("ssim", "diff", "mse"):
+            raise ValueError(f"Método desconocido: {d['metodo']}")
+        nuevos["metodo"] = d["metodo"]
+    if "umbral" in d:
+        nuevos["umbral"] = float(d["umbral"])
+    if "min_area_px" in d:
+        nuevos["min_area_px"] = max(0, int(d["min_area_px"]))
+    if "blur_ksize" in d:
+        nuevos["blur_ksize"] = max(0, int(d["blur_ksize"]))
+    if "marcar_cambios" in d:
+        nuevos["marcar_cambios"] = _bool(d["marcar_cambios"])
+    if "frames_estables" in d:
+        nuevos["frames_estables"] = max(1, int(d["frames_estables"]))
+    if "min_intervalo_eventos" in d:
+        v = float(d["min_intervalo_eventos"])
+        if v < 0:
+            raise ValueError("min_intervalo_eventos debe ser >= 0")
+        nuevos["min_intervalo_eventos"] = v
+    if "alinear_imagenes" in d:
+        nuevos["alinear_imagenes"] = _bool(d["alinear_imagenes"])
+    if "max_desplazamiento" in d:
+        nuevos["max_desplazamiento"] = max(1.0, float(d["max_desplazamiento"]))
+
+    # Aplicar al detector (en caliente) y a la config compartida
+    if detector is not None:
+        detector.actualizar(nuevos)
+    for clave, valor in nuevos.items():
+        setattr(config, clave, valor)
+
+    config.guardar()  # persiste en config.yaml
 
 
 def cargar_roi():
@@ -101,6 +247,27 @@ def ultimas_capturas(cantidad=2):
             "fecha": fecha.strftime("%d/%m/%Y %H:%M:%S") if fecha else "",
         })
     return resultado
+
+
+def ultimos_analisis_fs(cantidad=10) -> list:
+    """
+    Lee los últimos análisis JSON de la IA (carpeta analisis_ia junto a
+    la de capturas), ordenados del más reciente al más antiguo.
+    """
+    cantidad = min(max(int(cantidad), 0), 50)
+    dir_analisis = RUTA_CAPTURAS.parent / "analisis_ia"
+    if not dir_analisis.exists():
+        return []
+    archivos = sorted(dir_analisis.glob("analisis_*.json"), reverse=True)
+    lista = []
+    for archivo in archivos[:cantidad]:
+        try:
+            datos = json.loads(archivo.read_text(encoding="utf-8"))
+            datos["_archivo"] = archivo.name
+            lista.append(datos)
+        except (json.JSONDecodeError, OSError):
+            continue
+    return lista
 
 
 def leer_log_eventos(archivo_log: Path, cantidad=20):
@@ -208,7 +375,11 @@ PAGINA = """<!DOCTYPE html>
   #params input:disabled, #params select:disabled {
     opacity: 0.45; cursor: not-allowed; }
   .param-botones { display: flex; align-items: center; gap: 10px;
-                   margin-top: 4px; }
+                   margin-top: 4px; flex-wrap: wrap; }
+  .preset-label { font-size: 13px; color: #ccc; display: flex;
+                  align-items: center; gap: 6px; }
+  #p-preset { padding: 6px 8px; background: #262626; color: #eee;
+              border: 1px solid #444; border-radius: 5px; font-size: 13px; }
   #params-estado { font-size: 13px; min-height: 18px; }
   .info { max-width: 800px; }
   .columnas { display: flex; gap: 24px; align-items: flex-start;
@@ -237,6 +408,28 @@ PAGINA = """<!DOCTYPE html>
   .log-item { border: 1px solid #444; border-radius: 6px; margin-bottom: 8px;
               padding: 8px 12px; background: #262626; font-size: 13px; }
   .log-hora { color: #4fc3f7; font-weight: bold; }
+  /* Bloque de análisis IA */
+  #ia-caja { margin-top: 16px; }
+  #ia { max-height: 300px; overflow-y: scroll; border: 2px solid #3a4a5a;
+        border-radius: 8px; background: #16222b; padding: 10px;
+        font-size: 13px; }
+  #ia p { color: #aaa; }
+  .ia-item { border: 1px solid #2e7d32; border-radius: 6px; margin-bottom: 8px;
+             padding: 8px 12px; background: #1c2b24; color: #c8e6c9; }
+  .ia-hora { color: #81c784; font-weight: bold; }
+  .ia-kv { display: flex; gap: 6px; margin: 2px 0; }
+  .ia-k { color: #81c784; min-width: 90px; }
+  .ia-pre { background: #0c1216; border-radius: 4px; padding: 6px;
+            overflow-x: auto; color: #b0bec5; white-space: pre-wrap;
+            word-break: break-word; }
+  /* Historial IA: scroll propio, máximo 10 registros */
+  #ia-historial { margin-top: 8px; max-height: 320px; overflow-y: scroll;
+                  border: 2px solid #37474f; border-radius: 8px;
+                  background: #11191f; padding: 8px; }
+  .ia-hist-item { border-bottom: 1px solid #263238; padding: 6px 2px;
+                  font-size: 12px; }
+  .ia-hist-titulo { color: #81c784; font-weight: bold; }
+  #ia-historial p { color: #aaa; }
   .log-metricas { color: #eee; margin: 2px 0; }
   .log-sugerencia { color: #ffb74d; margin: 4px 0 0; padding-left: 8px;
                     border-left: 3px solid #ffb74d; }
@@ -256,6 +449,10 @@ PAGINA = """<!DOCTYPE html>
       <div>
         <button class="boton" id="guardar">💾 Guardar área</button>
         <button class="boton" id="limpiar">🗑️ Quitar área</button>
+        <button class="boton" id="rot-ccw" style="background:#546e7a"
+                title="Rotar 90° en sentido antihorario">↺ 90°</button>
+        <button class="boton" id="rot-cw" style="background:#546e7a"
+                title="Rotar 90° en sentido horario">↻ 90°</button>
       </div>
       <div id="estado"></div>
       <div id="vibracion"></div>
@@ -304,6 +501,12 @@ PAGINA = """<!DOCTYPE html>
           <label><input id="p-alinear" type="checkbox"> Compensar vibración</label>
         </div>
         <div class="param-botones">
+          <label class="preset-label"
+                 title="Ajusta min_area_px, blur y max_desplazamiento según la resolución de la cámara (el display ocupa más píxeles)">📷 Preset:
+            <select id="p-preset">
+              <option value="">— elegir resolución —</option>
+            </select>
+          </label>
           <button class="boton" id="btn-aplicar" style="background:#1565c0">💾 Aplicar todo</button>
           <button class="boton" id="btn-recargar" style="background:#455a64">🔄 Recargar valores</button>
           <span id="params-estado"></span>
@@ -315,6 +518,48 @@ PAGINA = """<!DOCTYPE html>
       <h1 style="margin-top:0">📸 Últimas capturas</h1>
       <div id="ultimas">
         <p>Cargando...</p>
+      </div>
+
+      <div id="ia-caja">
+        <div class="log-encabezado">
+          <h1 style="margin:0">🕵️ Análisis IA (último cambio)</h1>
+          <button class="boton" id="btn-ia" style="background:#455a64">ACTUALIZAR</button>
+        </div>
+        <div id="ia">
+          <p>El análisis IA está detenido. Actívalo para ver el análisis de
+             cada cambio detectado.</p>
+        </div>
+        <div id="ia-prompt-blk">
+          <label class="preset-label" style="font-size:12px">✨ Prompt de la IA</label>
+          <textarea id="ia-prompt" rows="6"
+             style="width:100%; box-sizing:border-box; background:#0c1216;
+                    color:#b0bec5; border:1px solid #37474f; border-radius:6px;
+                    font-family:Consolas,monospace; font-size:12px;
+                    padding:6px;"></textarea>
+          <div style="margin-top:6px">
+            <button class="boton" id="btn-ia-prompt" style="background:#1565c0">💾 Guardar prompt</button>
+            <button class="boton" id="btn-ia-prompt-guardar" style="background:#00838f">➕ Guardar en historial</button>
+            <button class="boton" id="btn-prompt-hist" style="background:#455a64">📚 Prompts guardados</button>
+            <span id="ia-prompt-estado" style="font-size:12px;color:#aaa;margin-left:8px"></span>
+          </div>
+        </div>
+        <div style="margin-top:8px">
+          <button class="boton" id="btn-historial" style="background:#37474f">📜 Mostrar registro</button>
+        </div>
+        <div id="ia-historial" style="display:none"></div>
+      </div>
+
+      <!-- Modal: historial de prompts guardados -->
+      <div id="modal-prompts" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0;
+           background:rgba(0,0,0,0.6); z-index:1000; align-items:center; justify-content:center;">
+        <div style="background:#1f1f1f; border:1px solid #555; border-radius:10px; max-width:720px;
+             width:92%; max-height:80%; overflow:hidden; display:flex; flex-direction:column;">
+          <div class="log-encabezado" style="padding:12px 16px; border-bottom:1px solid #333;">
+            <span style="font-size:16px; font-weight:bold">📚 Prompts guardados (máx 10)</span>
+            <button class="boton" id="btn-cerrar-prompts" style="background:#c62828">✖ Cerrar</button>
+          </div>
+          <div id="lista-prompts" style="padding:10px 16px; overflow-y:auto;"></div>
+        </div>
       </div>
 
       <div id="log-caja">
@@ -355,21 +600,45 @@ function redimensionar() {
 imagen.addEventListener('load', redimensionar);
 window.addEventListener('resize', redimensionar);
 
+// Los streams de video (MJPEG/RTSP) no disparan 'load' de archivo cada
+// vez, y la resolución/caja del <img> puede cambiar. Re-sincronizamos el
+// canvas con la caja real de la imagen periódicamente para que el dibujo
+// del ROI coincida siempre con lo que se ve.
+setInterval(() => {
+  const cw = imagen.clientWidth, ch = imagen.clientHeight;
+  if ((cw <= 0) || (lienzo.width === cw && lienzo.height === ch)) return;
+  lienzo.width = cw;
+  lienzo.height = ch;
+  dibujar();
+}, 400);
+
+// Resolución real del stream (informada por el backend en /api/config).
+// Se usa para el mapeo ROI↔pantalla en lugar de naturalWidth/Height,
+// que en streams MJPEG/RTSP pueden estar desincronizados y desplazan o
+// encogen el rectángulo.
+let _vW = 640, _vH = 480;
+function setResolucionVideo(w, h) {
+  if (w > 0 && h > 0) { _vW = w; _vH = h; }
+}
+
+// Coordenadas de pantalla (css, sobre lienzo) → píxeles reales del video.
+// Usa un único factor de escala según la caja visible de la imagen.
 function px_video_x(x) {
-  return Math.round(x * imagen.naturalWidth / imagen.clientWidth);
+  return Math.round(x * (_vW / imagen.clientWidth));
 }
 function px_video_y(y) {
-  return Math.round(y * imagen.naturalHeight / imagen.clientHeight);
+  return Math.round(y * (_vH / imagen.clientHeight));
 }
 
 function dibujar() {
   if (!imagen.clientWidth) return;
   ctx.clearRect(0, 0, lienzo.width, lienzo.height);
   if (!roi) return;
-  const x = roi[0] * lienzo.width / imagen.naturalWidth;
-  const y = roi[1] * lienzo.height / imagen.naturalHeight;
-  const w = roi[2] * lienzo.width / imagen.naturalWidth;
-  const h = roi[3] * lienzo.height / imagen.naturalHeight;
+  // roi está en píxeles del video real → a coordenadas del lienzo (css)
+  const x = roi[0] / _vW * lienzo.width;
+  const y = roi[1] / _vH * lienzo.height;
+  const w = roi[2] / _vW * lienzo.width;
+  const h = roi[3] / _vH * lienzo.height;
   ctx.strokeStyle = '#4fc3f7';
   ctx.lineWidth = 2;
   ctx.strokeRect(x, y, w, h);
@@ -389,8 +658,11 @@ lienzo.addEventListener('mousemove', e => {
   const rect = lienzo.getBoundingClientRect();
   const x = e.clientX - rect.left;
   const y = e.clientY - rect.top;
-  roi = [Math.min(inicioX, x), Math.min(inicioY, y),
-         Math.abs(x - inicioX), Math.abs(y - inicioY)];
+  // Convertir ambos extremos (css) a píxeles del video real
+  const aX = px_video_x(inicioX), aY = px_video_y(inicioY);
+  const bX = px_video_x(x), bY = px_video_y(y);
+  roi = [Math.min(aX, bX), Math.min(aY, bY),
+         Math.abs(bX - aX), Math.abs(bY - aY)];
   dibujar();
 });
 
@@ -401,8 +673,8 @@ document.getElementById('guardar').addEventListener('click', async () => {
     estado('⚠️ Dibuja primero un rectángulo sobre el video.');
     return;
   }
-  const region = [px_video_x(roi[0]), px_video_y(roi[1]),
-                  px_video_x(roi[2]), px_video_y(roi[3])];
+  // roi ya está en píxeles del video real (ver mousemove)
+  const region = roi.map(v => Math.round(v));
   const res = await fetch('/api/roi', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
@@ -421,6 +693,34 @@ document.getElementById('limpiar').addEventListener('click', async () => {
   roi = null;
   dibujar();
   estado('🗑️ Área eliminada — se analiza toda la imagen.');
+});
+
+// ── Rotación de imagen (0/90/180/270) ──────────────────────────────
+let rotAct = 0;
+// Lee la rotación actual desde la config al cargar
+async function leerRotacion() {
+  try {
+    const r = await fetch('/api/config');
+    const d = await r.json();
+    if (d.captura && typeof d.captura.rotacion === 'number') {
+      rotAct = d.captura.rotacion;
+      estado('🔄 Rotación ' + rotAct + '°');
+    }
+  } catch (e) {}
+}
+async function aplicarRotacion(nueva) {
+  const ok = await fetch('/api/rotacion', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({rotacion: nueva}),
+  });
+  if (ok.ok) { rotAct = nueva; estado('🔄 Rotación ' + nueva + '°'); }
+}
+document.getElementById('rot-ccw').addEventListener('click', () => {
+  aplicarRotacion((rotAct + 270) % 360);  // antihorario = -90
+});
+document.getElementById('rot-cw').addEventListener('click', () => {
+  aplicarRotacion((rotAct + 90) % 360);
 });
 
 function estado(msg) { document.getElementById('estado').textContent = msg; }
@@ -548,6 +848,50 @@ for (const [id, seccion, clave, conv] of CAMPOS) {
 
 // Al cambiar el método, re-evaluar qué campos quedan editables
 document.getElementById('p-metodo').addEventListener('change', actualizarHabilitados);
+
+// Presets por resolución de cámara: reemplazan al botón de valores
+// por defecto con configuraciones calibradas según los megapíxeles.
+async function cargarPresets() {
+  try {
+    const res = await fetch('/api/config');
+    const cfg = await res.json();
+    const sel = document.getElementById('p-preset');
+    sel.innerHTML = '<option value="">— elegir resolución —</option>' +
+      (cfg.presets || []).map(p =>
+        `<option value="${p.id}">${p.nombre} (${p.ancho}x${p.alto})</option>`
+      ).join('');
+    window._presets = cfg.presets || [];
+    // Resolución detectada del stream: seleccionar el preset aplicado
+    if (cfg.camara_resolucion) {
+      const [w, h] = cfg.camara_resolucion;
+      setResolucionVideo(w, h);
+      const p = (cfg.presets || []).find(x => x.id === cfg.preset_aplicado);
+      const estadoEl = document.getElementById('params-estado');
+      if (p) {
+        sel.value = p.id;
+        estadoEl.textContent = `📷 Resolución ${w}x${h} → preset ${p.nombre} aplicado`;
+      } else {
+        estadoEl.textContent = `📷 Resolución ${w}x${h} detectada (sin preset)`;
+      }
+      estadoEl.style.color = '#aaa';
+    }
+  } catch (e) { /* mantener el select vacío */ }
+}
+
+document.getElementById('p-preset').addEventListener('change', async () => {
+  const sel = document.getElementById('p-preset');
+  const preset = (window._presets || []).find(p => p.id === sel.value);
+  if (!preset) return;
+  if (!confirm(`¿Aplicar el preset de ${preset.nombre}?\nAjustará min_area_px, blur y max_desplazamiento (y dejará ssim, umbral 0.5, frames 2).`)) {
+    sel.value = '';
+    return;
+  }
+  const ok = await aplicar({deteccion: preset.deteccion},
+                           `✅ Preset ${preset.nombre} aplicado`);
+  // Mantener la opción elegida visible en el select (no volver al
+  // placeholder). Si se cancela la confirmación, sí se revierte.
+  if (ok) cargarParams();
+});
 
 // Recargar los valores aplicados desde el servidor (verdad en vivo),
 // por si otro cliente o edición manual cambió algo
@@ -681,10 +1025,203 @@ document.getElementById('btn-limpiar-log').addEventListener('click', async () =>
   }
 });
 
+// ── Análisis IA ────────────────────────────────────────────────────
+let iaActiva = false;
+
+// Pinta el botón SEGÚN el estado (sin red). Fuente de verdad: iaActiva.
+function pintaBotonIA(activa) {
+  iaActiva = activa;
+  const btn = document.getElementById('btn-ia');
+  if (!btn) return;
+  btn.textContent = activa ? '⏹️ Detener análisis IA' : '▶️ Activar análisis IA';
+  btn.style.background = activa ? '#c62828' : '#2e7d32';
+}
+
+// Lee el estado real al cargar (después de pintar con lo actualizado).
+async function actualizarEstadoIA() {
+  try {
+    const r = await fetch('/api/ia');
+    const est = await r.json();
+    pintaBotonIA(!!est.enabled);
+  } catch (e) { /* dejar el estado actual */ }
+}
+
+document.getElementById('btn-ia').addEventListener('click', async () => {
+  const proximo = !iaActiva;
+  // Pintar al instante (optimista): siempre alterna al hacer clic
+  pintaBotonIA(proximo);
+  try {
+    const r = await fetch('/api/ia', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({enabled: proximo}),
+    });
+    const d = await r.json();
+    // Corregir según lo que confirme el servidor (si difiere)
+    if (d && typeof d.enabled === 'boolean' && d.enabled !== proximo) {
+      pintaBotonIA(d.enabled);
+    }
+  } catch (e) {
+    // Si el POST falla (red/404), revertir al estado previo
+    pintaBotonIA(!proximo);
+  }
+});
+
+async function actualizarAnalisis() {
+  let lista;
+  try {
+    const res = await fetch('/api/analisis');
+    const d = await res.json();
+    lista = (d.analisis || []).slice(0, 10);
+  } catch (e) { return; }
+
+  // Último (más reciente) análisis completo
+  const ultimo = document.getElementById('ia');
+  if (!lista.length) {
+    ultimo.innerHTML = '<p>Sin análisis aún — cuando se detecte un cambio con IA activa, el JSON aparecerá aquí.</p>';
+  } else {
+    const a = lista[0];
+    const hora = (a.timestamp || '').replace('T', ' ').slice(0, 19);
+    const { _archivo, evento_id, timestamp: _ts, imagen_original: _img, ...resto } = a;
+    ultimo.innerHTML = `<div class="ia-item">
+      <div class="ia-hora">🕐 ${hora} · evento ${evento_id || ''}</div>
+      <pre class="ia-pre">${JSON.stringify(resto, null, 2)}</pre>
+    </div>`;
+  }
+
+  // Historial completo (hasta 10) para el bloque desplegable
+  const hist = document.getElementById('ia-historial');
+  if (!lista.length) {
+    hist.innerHTML = '<p>Sin registros de análisis aún.</p>';
+    return;
+  }
+  hist.innerHTML = lista.map(a => {
+    const hora = (a.timestamp || '').replace('T', ' ').slice(0, 19);
+    const { _archivo, timestamp: _ts, imagen_original: _img, ...dato } = a;
+    // dato = el JSON completo que devolvió la IA (sin metadatos)
+    return `<div class="ia-hist-item">
+      <span class="ia-hist-titulo">🕐 ${hora} · evento ${a.evento_id || ''}</span>
+      <pre class="ia-pre" style="margin-top:4px">${JSON.stringify(dato, null, 2)}</pre>
+    </div>`;
+  }).join('');
+  if (hist.style.display !== 'none') hist.scrollTop = 0;
+}
+
+// Toggle del bloque de registro/historial (oculto por defecto)
+document.getElementById('btn-historial').addEventListener('click', () => {
+  const hist = document.getElementById('ia-historial');
+  const btn = document.getElementById('btn-historial');
+  const oculto = hist.style.display === 'none';
+  hist.style.display = oculto ? 'block' : 'none';
+  btn.textContent = oculto ? '🙈 Ocultar registro' : '📜 Mostrar registro';
+});
+
+// ── Prompt de la IA (editable en tiempo real) ─────────────────────
+async function cargarPromptIA() {
+  try {
+    const r = await fetch('/api/ia/prompt');
+    const d = await r.json();
+    document.getElementById('ia-prompt').value = d.prompt || '';
+  } catch (e) { /* dejar vacío */ }
+}
+
+document.getElementById('btn-ia-prompt').addEventListener('click', async () => {
+  const texto = document.getElementById('ia-prompt').value;
+  const estadoEl = document.getElementById('ia-prompt-estado');
+  try {
+    const r = await fetch('/api/ia/prompt', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({prompt: texto}),
+    });
+    const d = await r.json();
+    if (d.ok) {
+      estadoEl.textContent = '✅ Guardado'; estadoEl.style.color = '#81c784';
+    } else {
+      estadoEl.textContent = '❌ ' + (d.error || 'Error'); estadoEl.style.color = '#ff8a80';
+    }
+  } catch (e) {
+    estadoEl.textContent = '❌ Error de conexión'; estadoEl.style.color = '#ff8a80';
+  }
+});
+
+// ── Historial de prompts (guardar / reutilizar) ────────────────────
+// Guardar el prompt ACTUAL al historial (no reemplaza al aplicado)
+document.getElementById('btn-ia-prompt-guardar').addEventListener('click', async () => {
+  const texto = document.getElementById('ia-prompt').value;
+  const estadoEl = document.getElementById('ia-prompt-estado');
+  if (!texto.trim()) { estadoEl.textContent = '⚠️ Prompt vacío'; estadoEl.style.color='#ffb74d'; return; }
+  try {
+    await fetch('/api/ia/prompts-hist', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({prompt: texto}),
+    });
+    estadoEl.textContent = '✅ Guardado en historial'; estadoEl.style.color = '#81c784';
+  } catch (e) { estadoEl.textContent = '❌ Error'; estadoEl.style.color = '#ff8a80'; }
+});
+
+document.getElementById('btn-prompt-hist').addEventListener('click', () => {
+  document.getElementById('modal-prompts').style.display = 'flex';
+  refrescarListaPrompts();
+});
+document.getElementById('btn-cerrar-prompts').addEventListener('click', () => {
+  document.getElementById('modal-prompts').style.display = 'none';
+});
+
+async function refrescarListaPrompts() {
+  let lista = [];
+  try {
+    const r = await fetch('/api/ia/prompts-hist');
+    const d = await r.json();
+    lista = d.prompts || [];
+  } catch (e) {}
+  const cont = document.getElementById('lista-prompts');
+  if (!lista.length) {
+    cont.innerHTML = '<p style="color:#aaa">Sin prompts guardados aún.</p>';
+    return;
+  }
+  cont.innerHTML = lista.map((p, idx) => {
+    const preview = p.replace(/\s+/g, ' ').slice(0, 90) + (p.length > 90 ? '…' : '');
+    return `<div class="ia-hist-item">
+      <div><b style="color:#00c48c">#${idx + 1}</b> · ${preview}</div>
+      <div style="margin-top:6px">
+        <button class="boton" data-usar="${idx}" style="background:#00695c;font-size:12px;padding:4px 10px">▶ Usar</button>
+        <button class="boton" data-copiar="${idx}" style="background:#37474f;font-size:12px;padding:4px 10px">📋 Copiar</button>
+        <button class="boton" data-borrar="${idx}" style="background:#c62828;font-size:12px;padding:4px 10px">🗑</button>
+      </div>
+    </div>`;
+  }).join('');
+  window._listaPrompts = lista;
+
+  cont.querySelectorAll('[data-usar]').forEach(b => b.addEventListener('click', async () => {
+    const elegido = window._listaPrompts[+b.dataset.usar];
+    // Aplicar como prompt actual (guarda en el textarea y en el server)
+    document.getElementById('ia-prompt').value = elegido;
+    await fetch('/api/ia/prompt', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({prompt: elegido})});
+    document.getElementById('modal-prompts').style.display = 'none';
+    document.getElementById('ia-prompt-estado').textContent = '✅ Prompt aplicado'; document.getElementById('ia-prompt-estado').style.color='#81c784';
+  }));
+  cont.querySelectorAll('[data-copiar]').forEach(b => b.addEventListener('click', () => {
+    const elegido = window._listaPrompts[+b.dataset.copiar];
+    document.getElementById('ia-prompt').value = elegido;
+  }));
+  cont.querySelectorAll('[data-borrar]').forEach(b => b.addEventListener('click', async () => {
+    const elegido = window._listaPrompts[+b.dataset.borrar];
+    await fetch('/api/ia/prompts-hist/delete', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({prompt: elegido})});
+    refrescarListaPrompts();
+  }));
+}
+
 // Cargar al abrir la página
 actualizarUltimas();
 actualizarLog();
 cargarParams();
+cargarPresets();
+actualizarEstadoIA();
+actualizarAnalisis();
+cargarPromptIA();
+leerRotacion();
 
 // Actualizar SOLO cuando el servidor avisa que hay una captura nueva
 // (sin polling periódico)
@@ -694,6 +1231,11 @@ fuenteEventos.onerror = () => {
   // Si la conexión se corta, EventSource reconecta solo; nada que hacer.
   console.log('Conexión de eventos reconectando...');
 };
+
+// Aviso cuando hay un análisis IA nuevo
+const fuenteAnalisis = new EventSource('/api/eventos-analisis');
+fuenteAnalisis.onmessage = () => { actualizarAnalisis(); };
+fuenteAnalisis.onerror = () => { /* reconecta solo */ };
 
 imagen.src = '/video';
 </script>
@@ -727,6 +1269,12 @@ def crear_app(capturador, config=None, detector=None):
                 # sobre el frame compartido, para no contaminar lo que
                 # analiza el detector (causa de falsos positivos).
                 frame = capturador.capturar().copy()
+                # Aplicar la rotación configurada para que el panel, el
+                # ROI y la IA vean la misma orientación
+                rot = getattr(config, "rotacion", 0) if config is not None else 0
+                if rot:
+                    from backend.capturador import rotar_frame
+                    frame = rotar_frame(frame, rot)
                 roi = cargar_roi()
                 if roi:
                     x, y, w, h = roi
@@ -798,10 +1346,16 @@ def crear_app(capturador, config=None, detector=None):
 
     @app.route("/api/config")
     def api_config():
-        """Parámetros actuales (captura + detección) para el panel web."""
+        """Parámetros actuales + presets por resolución para el panel web."""
         if config is None:
             return jsonify({"error": "Configuración no disponible"}), 503
-        return jsonify(config.a_dict())
+        datos = config.a_dict()
+        datos["presets"] = PRESETS_CAMARA
+        # Resolución real del stream y preset aplicado (info de runtime,
+        # no se persiste en el YAML)
+        datos["camara_resolucion"] = getattr(config, "camara_resolucion", None)
+        datos["preset_aplicado"] = getattr(config, "preset_aplicado", None)
+        return jsonify(datos)
 
     @app.route("/api/config", methods=["POST"])
     def api_config_guardar():
@@ -813,49 +1367,7 @@ def crear_app(capturador, config=None, detector=None):
             return jsonify({"error": "Configuración no disponible"}), 503
         datos = request.get_json(silent=True) or {}
         try:
-            # ── Captura ──
-            c = datos.get("captura") or {}
-            if "intervalo_segundos" in c:
-                v = float(c["intervalo_segundos"])
-                if v <= 0:
-                    raise ValueError("intervalo_segundos debe ser > 0")
-                config.intervalo_segundos = v
-
-            # ── Detección: validar todo primero, aplicar después ──
-            d = datos.get("deteccion") or {}
-            nuevos = {}
-            if "metodo" in d:
-                if d["metodo"] not in ("ssim", "diff", "mse"):
-                    raise ValueError(f"Método desconocido: {d['metodo']}")
-                nuevos["metodo"] = d["metodo"]
-            if "umbral" in d:
-                nuevos["umbral"] = float(d["umbral"])
-            if "min_area_px" in d:
-                nuevos["min_area_px"] = max(0, int(d["min_area_px"]))
-            if "blur_ksize" in d:
-                nuevos["blur_ksize"] = max(0, int(d["blur_ksize"]))
-            if "marcar_cambios" in d:
-                nuevos["marcar_cambios"] = _bool(d["marcar_cambios"])
-            if "frames_estables" in d:
-                nuevos["frames_estables"] = max(1, int(d["frames_estables"]))
-            if "min_intervalo_eventos" in d:
-                v = float(d["min_intervalo_eventos"])
-                if v < 0:
-                    raise ValueError("min_intervalo_eventos debe ser >= 0")
-                nuevos["min_intervalo_eventos"] = v
-            if "alinear_imagenes" in d:
-                nuevos["alinear_imagenes"] = _bool(d["alinear_imagenes"])
-            if "max_desplazamiento" in d:
-                nuevos["max_desplazamiento"] = max(
-                    1.0, float(d["max_desplazamiento"]))
-
-            # Aplicar al detector (en caliente) y a la config compartida
-            if detector is not None:
-                detector.actualizar(nuevos)
-            for clave, valor in nuevos.items():
-                setattr(config, clave, valor)
-
-            config.guardar()  # persiste en config.yaml
+            _aplicar_config(datos, config, detector)
             return jsonify({"ok": True})
         except (ValueError, TypeError) as e:
             return jsonify({"ok": False, "error": str(e)}), 400
@@ -885,6 +1397,119 @@ def crear_app(capturador, config=None, detector=None):
                     cambio = _contador_capturas != ultimo
                     if cambio:
                         ultimo = _contador_capturas
+                if cambio:
+                    yield f"data: {ultimo}\n\n"
+
+        return Response(generar(), mimetype="text/event-stream",
+                        headers={"Cache-Control": "no-cache",
+                                 "X-Accel-Buffering": "no"})
+
+    @app.route("/api/rotacion", methods=["POST"])
+    def api_rotacion():
+        """Fija la rotación de la imagen (0/90/180/270, en el sentido de
+        las agujas del reloj en la vista del panel). Aplica en vivo."""
+        if config is None:
+            return jsonify({"error": "Configuración no disponible"}), 503
+        datos = request.get_json(silent=True) or {}
+        try:
+            ang = int(datos.get("rotacion", 0)) % 360
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "rotación inválida"}), 400
+        config.rotacion = ang
+        try:
+            config.guardar()
+        except OSError:
+            pass
+        logger.info(f"🔄 Rotación de imagen establecida a {ang}°")
+        return jsonify({"ok": True, "rotacion": ang})
+
+    @app.route("/api/analisis")
+    def api_analisis():
+        """Últimos análisis de IA (historial), del más reciente al más
+        antiguo. Máximo 10 registros."""
+        return jsonify({"analisis": ultimos_analisis_fs(10)})
+
+    @app.route("/api/ia")
+    def api_ia_estado():
+        """Estado actual del análisis IA (enabled/disabled)."""
+        if config is None:
+            return jsonify({"error": "Configuración no disponible"}), 503
+        return jsonify({"enabled": bool(config.ia_enabled),
+                        "model": config.ia_model,
+                        "detail": config.ia_detail})
+
+    @app.route("/api/ia", methods=["POST"])
+    def api_ia_toggle():
+        """Activa/desactiva el análisis IA EN SESIÓN (no se persiste:
+        el backend arranca siempre con IA desactivada por defecto)."""
+        if config is None:
+            return jsonify({"error": "Configuración no disponible"}), 503
+        datos = request.get_json(silent=True) or {}
+        if "enabled" not in datos:
+            return jsonify({"ok": False, "error": "falta 'enabled'"}), 400
+        config.ia_enabled = bool(datos["enabled"])
+        logger.info("🕵️ Análisis IA %s",
+                    "ACTIVADO (sesión)" if config.ia_enabled else "DETENIDO")
+        return jsonify({"ok": True, "enabled": bool(config.ia_enabled)})
+
+    @app.route("/api/ia/prompt")
+    def api_ia_prompt_get():
+        """Devuelve el prompt actual del análisis IA."""
+        from backend.ia import lee_prompt_actual
+        return jsonify({"prompt": lee_prompt_actual()})
+
+    @app.route("/api/ia/prompt", methods=["POST"])
+    def api_ia_prompt_post():
+        """Guarda el prompt del análisis IA (se aplica en tiempo real)."""
+        from backend.ia import guarda_prompt
+        datos = request.get_json(silent=True) or {}
+        texto = datos.get("prompt", "")
+        if not texto.strip():
+            return jsonify({"ok": False, "error": "prompt vacío"}), 400
+        guarda_prompt(texto)
+        logger.info("🕵️ Prompt IA actualizado")
+        return jsonify({"ok": True})
+
+    @app.route("/api/ia/prompts-hist")
+    def api_ia_historial():
+        """Lista de prompts guardados (máx 10), más reciente primero."""
+        from backend.ia import lista_prompts_hist
+        return jsonify({"prompts": lista_prompts_hist()})
+
+    @app.route("/api/ia/prompts-hist", methods=["POST"])
+    def api_ia_historial_guardar():
+        """Guarda el prompt actual (o el enviado) en el historial."""
+        from backend.ia import guarda_prompt_historico
+        datos = request.get_json(silent=True) or {}
+        texto = datos.get("prompt", "").strip()
+        if not texto:
+            # si no viene, usar el del archivio actual
+            from backend.ia import lee_prompt_actual
+            texto = lee_prompt_actual()
+        lista = guarda_prompt_historico(texto)
+        return jsonify({"ok": True, "prompts": lista})
+
+    @app.route("/api/ia/prompts-hist/delete", methods=["POST"])
+    def api_ia_historial_eliminar():
+        """Elimina un prompt del historial por contenido."""
+        from backend.ia import elimina_prompt_historico
+        datos = request.get_json(silent=True) or {}
+        texto = datos.get("prompt", "")
+        lista = elimina_prompt_historico(texto)
+        return jsonify({"ok": True, "prompts": lista})
+
+    @app.route("/api/eventos-analisis")
+    def api_eventos_analisis():
+        """SSE: avisa al dashboard cuando hay un análisis IA nuevo."""
+        def generar():
+            ultimo = _contador_analisis
+            yield ": conectado\n\n"
+            while True:
+                with _condicion_analisis:
+                    _condicion_analisis.wait(timeout=30)
+                    cambio = _contador_analisis != ultimo
+                    if cambio:
+                        ultimo = _contador_analisis
                 if cambio:
                     yield f"data: {ultimo}\n\n"
 

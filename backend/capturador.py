@@ -7,6 +7,23 @@ from typing import Union
 import numpy as np
 
 
+def rotar_frame(img, grados):
+    """Rota la imagen en pasos de 90°. grados ∈ {0,90,180,270}, tomado
+    en el sentido de las agujas del reloj (horario), que es el más
+    intuitivo: 90 = gira a la derecha, 270 = gira a la izquierda."""
+    g = int(grados) % 360
+    if g == 0 or img is None:
+        return img
+    import cv2
+    if g == 90:
+        return cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
+    if g == 180:
+        return cv2.rotate(img, cv2.ROTATE_180)
+    if g == 270:
+        return cv2.rotate(img, cv2.ROTATE_90_COUNTERCLOCKWISE)
+    return img
+
+
 class CapturadorPantalla:
     """Captura una región de la pantalla (mss — muy rápido)."""
 
@@ -37,23 +54,49 @@ class CapturadorPantalla:
 class CapturadorCamara:
     """Captura desde cámara USB (int) o RTSP (str) vía OpenCV.
 
-    Incluye tolerancia a cortes del stream (común en WiFi):
-    si un frame falla, reintenta hasta 3 veces antes de reportar error,
-    y devuelve el último frame válido si la reconexión tiene éxito.
+    Usa el mismo patrón del CapturadorMJPEG (hilo de fondo + frame más
+    reciente) para eliminar la latencia y evitar que `read()` bloquee:
+
+      1. Un hilo en segundo plano lee el stream continuamente (FFMPEG
+         para RTSP/red, DirectShow para webcam USB) y se relanza solo
+         si el stream falla o se corta (reconexión automática).
+      2. Conserva SOLO el último frame válido.
+      3. capturar() devuelve al instante el frame más reciente.
+         Si el stream se cayó, devuelve el último frame válido mientras
+         el hilo intenta reconectar (no muere en cada corte de WiFi).
     """
 
     def __init__(self, fuente, nombre="camara", timeout_segundos=5):
         self.fuente = fuente
         self.nombre = nombre
         self.timeout = timeout_segundos
-        self.ultimo_frame = None
-        self.cap = self._abrir()
+        self._frame: np.ndarray | None = None
+        self._ultimo_error = None
+        self._lock = threading.Lock()
+        self._detener = threading.Event()
+        self._hilo = threading.Thread(
+            target=self._consumir_stream, daemon=True
+        )
+        self._hilo.start()
 
-    def _abrir(self):
+        # Esperar el primer frame (con límite de tiempo)
+        for _ in range(timeout_segundos * 10):
+            with self._lock:
+                if self._frame is not None:
+                    break
+            time.sleep(0.1)
+        if self._frame is None:
+            # Detener el hilo antes de fallar: si el llamador reintenta,
+            # no deben quedar hilos huérfanos abriendo la misma cámara.
+            self._detener.set()
+            raise RuntimeError(
+                f"No se pudo abrir la cámara: {self.fuente} "
+                f"({self._ultimo_error})"
+            )
+
+    def _abrir_cap(self):
+        """Abre el VideoCapture con el backend correcto."""
         import cv2
-        # Backend correcto según el tipo de fuente:
-        #  - URL RTSP → FFMPEG (maneja redes)
-        #  - Índice numérico → DirectShow en Windows (cámaras USB)
         es_url = isinstance(self.fuente, str)
         if es_url:
             cap = cv2.VideoCapture(self.fuente, cv2.CAP_FFMPEG)
@@ -61,35 +104,48 @@ class CapturadorCamara:
             cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, self.timeout * 1000)
         else:
             cap = cv2.VideoCapture(self.fuente, cv2.CAP_DSHOW)
-        # Buffer mínimo (1 frame): evita que OpenCV acumule frames viejos
-        # del stream y devuelva video retrasado. Solo conserva el más reciente.
-        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # solo el frame más reciente
         if not cap.isOpened():
             cap.release()
             raise RuntimeError(f"No se pudo abrir la cámara: {self.fuente}")
-        # Permitir que la cámara se estabilice (exposición, balance, etc.)
-        for _ in range(5):
-            ret, frame = cap.read()
-            if ret:
-                self.ultimo_frame = frame
         return cap
 
+    def _consumir_stream(self):
+        """Hilo: lee el stream continuamente y conserva el último frame.
+        Si el stream se corta, cierra y relanza el VideoCapture."""
+        while not self._detener.is_set():
+            try:
+                cap = self._abrir_cap()
+            except Exception as e:  # noqa: BLE001 — reconexión
+                self._ultimo_error = str(e)
+                if not self._detener.is_set():
+                    time.sleep(1.0)  # pausa entre reintentos de apertura
+                continue
+            while not self._detener.is_set():
+                try:
+                    ret, frame = cap.read()
+                except Exception as e:  # noqa: BLE001
+                    ret = False
+                    self._ultimo_error = str(e)
+                if ret and frame is not None:
+                    with self._lock:
+                        self._frame = frame
+                else:
+                    # Frame caído (corte WiFi/RTSP): salir para reconectar
+                    break
+            cap.release()
+            if not self._detener.is_set():
+                time.sleep(0.5)
+
     def capturar(self) -> np.ndarray:
-        for intento in range(3):
-            ret, frame = self.cap.read()
-            if ret and frame is not None:
-                self.ultimo_frame = frame
-                return frame
-            # Frame caído (corte WiFi): intentar reconectar
-            self.cap.release()
-            self.cap = self._abrir()
-        # Si todo falla, devolver el último frame válido en vez de morir
-        if self.ultimo_frame is not None:
-            return self.ultimo_frame
-        raise RuntimeError(f"Sin conexión con la cámara: {self.fuente}")
+        with self._lock:
+            frame = self._frame
+        if frame is None:
+            raise RuntimeError("Sin frames disponibles de la cámara")
+        return frame
 
     def cerrar(self):
-        self.cap.release()
+        self._detener.set()
 
 
 class CapturadorMJPEG:
@@ -123,15 +179,17 @@ class CapturadorMJPEG:
         self._hilo.start()
 
         # Esperar el primer frame (con límite de tiempo)
-        for _ in range(timeout_segundos * 10):
+        for _ in range(max(timeout_segundos * 10, 20)):
             with self._lock:
-                if self._frame is not None:
-                    break
+                listo = self._frame is not None or self._ultimo_error is not None
+            if listo:
+                break
             time.sleep(0.1)
         if self._frame is None:
+            self._detener.set()
+            motivo = self._ultimo_error or "sin respuesta (timeout)"
             raise RuntimeError(
-                f"No se pudo abrir la cámara MJPEG: {fuente} "
-                f"({self._ultimo_error})"
+                f"No se pudo abrir la cámara MJPEG: {fuente} ({motivo})"
             )
 
     def _consumir_stream(self):

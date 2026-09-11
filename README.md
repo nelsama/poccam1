@@ -58,6 +58,10 @@ python main.py
 Al arrancar imprime la configuración y deja el panel web en
 `http://localhost:5000` (accesible desde otros equipos de la red).
 
+> Si la cámara no responde al arrancar (apagada, sin red, stream no
+> iniciado), el backend lo avisa y **reintenta cada 5 s** hasta que
+> vuelve a estar disponible — no termina con un error. Ctrl+C para salir.
+
 ## 🌐 Panel web
 
 Abre `http://localhost:5000` (o `http://IP-del-equipo:5000`).
@@ -66,7 +70,7 @@ Abre `http://localhost:5000` (o `http://IP-del-equipo:5000`).
 |---|---|
 | **Video en vivo** | Arrastra el mouse para dibujar el **rectángulo de análisis (ROI)**. Solo lo que está dentro se analiza: el fondo (personas, luces, movimiento) se ignora por completo. Botones 💾 Guardar área / 🗑️ Quitar área |
 | **Indicador de vibración** | Muestra el desplazamiento estimado en vivo: `✅ Sin vibración (dy, dx)` / `⚠️ Vibración detectada` / `🚫 Compensación DESACTIVADA`. Incluye el margen de borde y el desglose interior/borde de la última comparación |
-| **⚙️ Parámetros (en vivo)** | Todos los parámetros de captura y detección. Cada campo se aplica solo al terminar de editarlo (Enter o clic fuera) y **se guarda en `config.yaml`** — sin reiniciar |
+| **⚙️ Parámetros (en vivo)** | Todos los parámetros de captura y detección. Cada campo se aplica solo al terminar de editarlo (Enter o clic fuera) y **se guarda en `config.yaml`** — sin reiniciar. Select **📷 Preset**: configuración de partida según la resolución de la cámara (VGA, HD, FullHD, 4 MP, 5 MP, 4K) que ajusta `min_area_px`, `blur` y `max_desplazamiento`. Al iniciar, el backend **detecta la resolución del stream** y aplica el preset que le corresponde (lo verás seleccionado en el select, con mensaje). Botones: 💾 Aplicar todo y 🔄 Recargar valores (re-sincroniza con el servidor) |
 | **📸 Últimas capturas** | Las 2 imágenes de eventos más recientes con su fecha (se actualizan solo cuando hay una nueva) |
 | **📋 Log de cambios** | Cada evento con su área de píxeles, score y una **sugerencia de ajuste** (p. ej. "sube min_area_px a X"). Botón para limpiar |
 
@@ -136,6 +140,7 @@ Todos se pueden editar en vivo desde el panel web (se aplican y se guardan solos
 | `camara_fuente` | `0` | índice USB, URL RTSP o URL HTTP MJPEG |
 | `nombre_camara` | `camara` | nombre legible que queda en el log de eventos |
 | `intervalo_segundos` | `1.0` | **cada cuánto pedir imagen a la cámara** (0.25 = 4 fps de prueba) |
+| `aplicar_preset_al_iniciar` | `true` | al iniciar, detecta la resolución real del stream y aplica el preset correspondiente |
 | `region` / `monitor` | — | solo para captura de pantalla |
 
 ### Detección

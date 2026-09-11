@@ -11,6 +11,10 @@ env/
 capturas_cambio/
 # Log de eventos detectados
 eventos.jsonl
+# Análisis JSON de la IA (se regeneran al correr)
+analisis_ia/
+# Historial de prompts guardados desde el panel (data de uso)
+ia_prompts_hist.json
 # Área de análisis definida en el panel web
 roi.json
 
