@@ -399,7 +399,7 @@ def construir_log_web(archivo_log: Path, min_area_px: int):
     return resultado
 
 
-PAGINA = """<!DOCTYPE html>
+PAGINA = r"""<!DOCTYPE html>
 <html lang="es">
 <head>
 <meta charset="utf-8">
