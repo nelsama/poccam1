@@ -19,6 +19,7 @@ display en particular.
 | **`README.md`** (este) | Qué hace, cómo usarlo, pipeline, parámetros y calibración |
 | **[`API.md`](API.md)** | **Referencia de la API HTTP**: endpoints, campos, ejemplos y SSE |
 | **[`ARQUITECTURA.md`](ARQUITECTURA.md)** | Diseño interno: módulos, hilos, decisiones y deudas técnicas |
+| **[`CONTRATO_NUBE.md`](CONTRATO_NUBE.md)** | Diseño del concentrador y su contrato con el sistema externo (nube) |
 | **`postman_collection.json`** | Colección de Postman lista para importar (30 requests) |
 
 La API de configuración/estado (solo JSON) es consumible desde otro equipo de
