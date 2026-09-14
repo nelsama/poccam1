@@ -3,6 +3,9 @@
 API serverless (Vercel · Node/TypeScript) que implementa el lado servidor del
 contrato con el concentrador (`CONTRATO_NUBE.md`) y persiste en **Supabase**.
 
+> 📖 Para la puesta en marcha paso a paso, los problemas conocidos del despliegue
+> y cómo verificarlo, ver **[`../DESPLIEGUE.md`](../DESPLIEGUE.md)**.
+
 ## Responsabilidad
 
 | Función | Endpoint |
@@ -20,6 +23,8 @@ contrato con el concentrador (`CONTRATO_NUBE.md`) y persiste en **Supabase**.
 > eventos y análisis.
 
 ## Puesta en marcha
+
+Resumen rápido; el detalle está en [`../DESPLIEGUE.md`](../DESPLIEGUE.md).
 
 ### 1. Crear las tablas en Supabase
 

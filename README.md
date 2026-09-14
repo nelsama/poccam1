@@ -20,6 +20,7 @@ display en particular.
 | **[`API.md`](API.md)** | **Referencia de la API HTTP**: endpoints, campos, ejemplos y SSE |
 | **[`ARQUITECTURA.md`](ARQUITECTURA.md)** | Diseño interno: módulos, hilos, decisiones y deudas técnicas |
 | **[`CONTRATO_NUBE.md`](CONTRATO_NUBE.md)** | Diseño del concentrador y su contrato con el sistema externo (nube) |
+| **[`DESPLIEGUE.md`](DESPLIEGUE.md)** | Puesta en marcha en la nube, problemas conocidos y verificación |
 | **`postman_collection.json`** | Colección de Postman lista para importar (30 requests) |
 
 La API de configuración/estado (solo JSON) es consumible desde otro equipo de
@@ -69,7 +70,7 @@ backend-nube/          ← API del sistema externo (Vercel · Node/TS + Supabase
 ├── schema.sql         ← tablas (ejecutar en Supabase)
 └── README.md          ← puesta en marcha y despliegue
 
-README.md · API.md · ARQUITECTURA.md · CONTRATO_NUBE.md · postman_collection.json
+README.md · API.md · ARQUITECTURA.md · CONTRATO_NUBE.md · DESPLIEGUE.md · postman_collection.json
 ```
 
 ## 🚀 Inicio Rápido
