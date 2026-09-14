@@ -213,8 +213,8 @@ Todos ignorados por git (ver `.gitignore`).
 7. **Parámetros en vivo**: la web recibe el mismo objeto `Config` y
    `DetectorCambios` que el monitor; los muta y los persiste. El detector
    expone `actualizar()` para validar y aplicar cambios de detección.
-8. **UI de un solo archivo**: `PAGINA` (string embebido) mantiene el proyecto
-   autocontenido; a cambio, editar la UI requiere reiniciar el proceso.
+8. **Panel compartido**: el HTML/JS del panel vive en `compartido/panel.html`
+   (un solo archivo). Lo sirve el **concentrador**; el worker ya no sirve HTML.
 
 ## 8. Deudas técnicas / posibles refactors
 
@@ -222,14 +222,16 @@ Todos ignorados por git (ver `.gitignore`).
   módulo compartido (p. ej. `backend/roi.py`) para invertir la dependencia.
 - **Servidor de desarrollo de Flask** (`app.run`): suficiente para 1-2 clientes
   y 1 fps; para producción usar `waitress` (Windows) o `gunicorn` detrás de
-  un proxy.
-- **`PAGINA` embebida**: si el frontend crece, separarlo a `backend/static/` +
-  `backend/templates/`.
+  un proxy. El worker usa `threaded=True` porque el panel abre varias
+  conexiones SSE simultáneas.
+- **Límite de conexiones del navegador**: el panel abre 4 SSE permanentes +
+  el video MJPEG. Con HTTP/1.1 el navegador permite 6 por host:puerto, así que
+  en el concentrador quedan casi agotadas. Si aparecen bloqueos, el video puede
+  servirse directo desde el worker (host distinto → contador propio).
 - **Eventos en memoria** (`leer_log_eventos` lee el archivo completo): con
   millones de líneas convendrá un índice o base de datos ligera (SQLite).
-- **Multi-cámara**: hoy es un proceso por cámara (puertos distintos). Para
-  consolidar, refactorizar a un `MonitorBackend` por cámara dentro de un mismo
-  proceso con `asyncio`/hilos y una tabla de cámaras.
+- **Multi-cámara**: hoy es un proceso por cámara (puertos distintos), unificados
+  en un solo panel por el concentrador.
 
 ## 9. Cómo extender
 

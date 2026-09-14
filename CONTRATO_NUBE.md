@@ -6,6 +6,42 @@ Documento de diseño previo a la implementación. Define cómo se comunican el
 
 Complementa a `API.md` (contrato del worker) y `ARQUITECTURA.md` (diseño actual).
 
+> ⚠️ **Estado de implementación.** Este documento mezcla el **diseño** con lo que
+> efectivamente está **desplegado**. Para no confundirse:
+>
+> | Sección | Estado |
+> |---|---|
+> | §1–5 (arquitectura, identidad, sobre, endpoints) | ✅ **Implementado y en producción** |
+> | §6 (modelo de datos) | ⚠️ Referencia: el esquema real es `backend-nube/schema.sql` |
+> | §7 (persistencia por nivel) | ✅ Implementado |
+> | §8–10 (flujo, decisiones, fases) | ✅ Implementado / histórico |
+>
+> **Para conectar un sistema externo, usar las secciones §3 y §5.**
+> **Para el esquema real de la base, usar `backend-nube/schema.sql`.**
+
+---
+
+## 0. Acceso rápido (estado real en producción)
+
+**Base URL:** `https://backend-nube.vercel.app`
+
+**Autenticación:** `Authorization: Bearer <CONCENTRADOR_TOKEN>` — requerida
+**solo** en las rutas bajo `/api/concentrador/`. Las de consulta son abiertas.
+
+| Método | Ruta | Auth | Qué hace |
+|---|---|---|---|
+| `GET` | `/api/salud` | — | Verifica que el servicio está vivo |
+| `GET` | `/api/concentrador/config?version=N` | 🔑 | Config vigente; `304` si no cambió |
+| `POST` | `/api/concentrador/analisis` | 🔑 | Recibe un análisis de la IA |
+| `POST` | `/api/concentrador/estado` | 🔑 | Heartbeat del concentrador |
+| `POST` | `/api/concentrador/config` | 🔑 | Publica config hecha en local |
+| `GET` | `/api/workers` | — | Workers conocidos |
+| `GET` | `/api/analisis?worker_id=&limit=` | — | Consulta análisis (máx. 500) |
+| `GET` | `/api/eventos?worker_id=&limit=` | — | Consulta eventos |
+
+> **No hay notificaciones en tiempo real.** El sistema externo debe **consultar**
+> (polling). La API no empuja eventos por SSE ni websockets.
+
 ---
 
 ## 1. Arquitectura objetivo
@@ -311,39 +347,70 @@ Con el mismo formato de §5.1. Sirve para que los cambios hechos desde el
 
 ---
 
-## 6. Modelo de datos sugerido (sistema externo)
+## 6. Modelo de datos (sistema externo)
 
-El campo `datos` se guarda como **JSONB** para no atar la base al esquema.
+> ⚠️ **El esquema real es `backend-nube/schema.sql`** — esa es la fuente de
+> verdad. Lo de abajo es la descripción de las tablas tal como existen hoy en
+> Supabase.
 
-```sql
-CREATE TABLE eventos (
-  id           BIGSERIAL PRIMARY KEY,
-  worker_id    TEXT        NOT NULL,
-  evento_id    TEXT        UNIQUE,
-  timestamp    TIMESTAMPTZ NOT NULL,
-  score        REAL,
-  area_px      INTEGER,
-  area_borde   INTEGER,
-  metodo       TEXT
-);
+El campo `datos` se guarda como **JSONB** para no atar la base al esquema que
+produzca el prompt de la IA.
 
-CREATE TABLE analisis (
-  id           BIGSERIAL PRIMARY KEY,
-  worker_id    TEXT        NOT NULL,
-  evento_id    TEXT        REFERENCES eventos(evento_id),
-  timestamp    TIMESTAMPTZ NOT NULL,
-  esquema      TEXT,              -- "personas_v1", "display_v1", ...
-  datos        JSONB,             -- JSON libre que devolvió la IA
-  modelo       TEXT,
-  detail       TEXT,
-  latencia_ms  INTEGER,
-  error        TEXT               -- si el análisis falló
-);
+### `workers` — workers registrados (auto-descubrimiento)
 
-CREATE INDEX idx_analisis_worker  ON analisis (worker_id, timestamp DESC);
-CREATE INDEX idx_analisis_esquema ON analisis (esquema);
-CREATE INDEX idx_analisis_datos   ON analisis USING GIN (datos);
-```
+| Columna | Uso |
+|---|---|
+| `worker_id` | Identidad (PK), definida localmente en cada worker |
+| `nombre` | Etiqueta para mostrar |
+| `esquema` | Nombre del formato de `datos` |
+| `concentrador_id` | A qué concentrador pertenece |
+| `ultima_vista` | Se actualiza con cada heartbeat |
+
+### `config_workers` — configuración que la nube manda
+
+| Columna | Uso |
+|---|---|
+| `worker_id` | PK, referencia a `workers` |
+| `payload` | JSONB con los bloques de config (`captura`, `deteccion`, `ia`) |
+| `version` | Se incrementa en cada cambio → habilita el `304` |
+
+> La **versión global** que ve el concentrador es la **suma** de las versiones
+> por worker. Si algún worker cambia, la suma cambia y el `304` no se aplica.
+
+### `analisis` — resultados de la IA (lo principal)
+
+| Columna | Uso |
+|---|---|
+| `id` | PK autoincremental |
+| `worker_id` | Origen |
+| `evento_id` | **UNIQUE** → idempotencia de la cola offline |
+| `timestamp` | Cuándo lo produjo el worker |
+| `esquema` | Formato de `datos` (ej. `generico_v1`) |
+| `datos` | **JSONB libre**: exactamente lo que devolvió la IA |
+| `modelo` / `detail` / `latencia_ms` | Metadatos del análisis |
+| `area_px` / `score` | Del evento que disparó el análisis |
+| `recibido` | Cuándo llegó a la nube |
+
+### `eventos` y `heartbeats`
+
+- `eventos`: los cambios detectados (`score`, `area_px`, `area_borde`, `metodo`).
+  **Hoy el concentrador no los envía** — ver §6.1.
+- `heartbeats`: latido del concentrador con el estado de cada worker. Permite
+  mostrar el estado **aunque el concentrador no sea alcanzable** (nunca lo es).
+
+### 6.1 Estado real de cada tabla
+
+| Tabla | Estado |
+|---|---|
+| `analisis` | ✅ **En uso** — destino de los análisis de la IA |
+| `workers` | ✅ En uso (auto-descubrimiento al recibir un análisis) |
+| `heartbeats` | ✅ En uso (cada 120 s) |
+| `config_workers` | ⚠️ Vacía hasta que alguien publique config desde la nube |
+| `eventos` | ⚠️ **Vacía**: el concentrador no envía eventos, solo análisis |
+
+> **Nota importante:** la tabla `analisis` solo recibe datos cuando el worker
+> tiene la **IA activa** (es un toggle manual). Los cambios detectados con la IA
+> apagada quedan solo en el `eventos.jsonl` local del worker, que **se rota**.
 
 Consultas habilitadas por el diseño genérico:
 
@@ -358,6 +425,100 @@ FROM analisis
 WHERE esquema = 'display_v1'
   AND datos->>'estado' = 'calentando';
 ```
+
+---
+
+## 6.2 Cómo consume el sistema externo (guía práctica)
+
+El sistema externo (dashboard en la nube) **solo consulta** la API. No recibe
+notificaciones: debe hacer *polling*.
+
+### Caso 1 — Mostrar los últimos análisis
+
+```bash
+# Todos los workers, los 50 más recientes
+curl "https://backend-nube.vercel.app/api/analisis?limit=50"
+
+# Solo un worker
+curl "https://backend-nube.vercel.app/api/analisis?worker_id=panel-1&limit=20"
+```
+
+Respuesta:
+
+```json
+{
+  "analisis": [
+    {
+      "id": 5,
+      "worker_id": "panel-1",
+      "evento_id": "20260914_140426_904",
+      "timestamp": "2026-09-14T17:04:33.484+00:00",
+      "esquema": "generico_v1",
+      "datos": { "Confianza": 0.85, "Detectado": true, "Nota": "..." },
+      "modelo": "deepseek-v4-flash-vision-exp",
+      "area_px": 102477,
+      "score": 0.125897,
+      "recibido": "2026-09-14T17:04:32.798+00:00"
+    }
+  ]
+}
+```
+
+> **`datos` es opaco.** El sistema externo no debe asumir sus campos: los define
+> el prompt de cada worker y pueden cambiar sin aviso. Para renderizar de forma
+> genérica, iterar sus claves.
+
+### Caso 2 — Saber qué workers existen
+
+```bash
+curl "https://backend-nube.vercel.app/api/workers"
+```
+
+Devuelve `worker_id`, `esquema` y `ultima_vista`. Sirve para **descubrir**
+workers sin conocerlos de antemano y para filtrar dashboards por esquema.
+
+### Caso 3 — Saber si un worker está vivo
+
+No hay endpoint directo, pero `ultima_vista` lo resuelve: si es reciente
+(< 3 min), el worker está reportando.
+
+```bash
+curl "https://backend-nube.vercel.app/api/workers"
+```
+
+### Caso 4 — Publicar configuración a los workers
+
+```bash
+curl -X POST "https://backend-nube.vercel.app/api/concentrador/config" \
+  -H "Authorization: Bearer $CONCENTRADOR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "workers": {
+      "panel-1": {
+        "deteccion": { "min_area_px": 700 },
+        "ia": { "esquema": "display_v1" }
+      }
+    }
+  }'
+```
+
+El concentrador lo recoge en su siguiente consulta (cada 60 s) y lo reparte al
+worker. Los parámetros **no incluidos** se dejan intactos (es parcial).
+
+> ⚠️ **La cámara NO se configura desde la nube.** `camara_fuente` y `fuente` se
+> ignoran aunque vengan en el payload: son hardware local del worker.
+
+### Patrón de polling recomendado
+
+| Qué | Cada cuánto | Por qué |
+|---|---|---|
+| Análisis nuevos | 10-30 s | Es lo que el usuario quiere ver llegar |
+| Lista de workers | 5 min | Cambia poco |
+| Config publicada | Solo cuando el usuario la cambia | Es una acción explícita |
+
+Cada respuesta incluye `id` (autoincremental). Para traer solo lo nuevo:
+guardar el último `id` visto y filtrar en el cliente, o consultar con `limit`
+pequeño y descartar lo repetido por `evento_id`.
 
 ---
 

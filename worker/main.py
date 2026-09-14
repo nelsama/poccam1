@@ -178,7 +178,14 @@ class MonitorBackend:
                         "(aplicar_preset_al_iniciar: false)")
 
     def _iniciar_web(self):
-        """Arranca el panel web (configuración del área de análisis)."""
+        """Arranca la API HTTP del worker (JSON + video).
+
+        `threaded=True` es OBLIGATORIO: el panel usa varias conexiones SSE
+        (`/api/estado`, `/api/eventos`, `/api/eventos-analisis`,
+        `/api/config-eventos`) que permanecen abiertas indefinidamente. Con
+        el servidor de un solo hilo, la primera conexión SSE bloquea el
+        resto y el panel deja de actualizarse.
+        """
         if not self.config.web_enabled:
             return
         from backend.web import crear_app
@@ -189,12 +196,14 @@ class MonitorBackend:
             kwargs={"host": self.config.web_host,
                     "port": self.config.web_port,
                     "debug": False,
-                    "use_reloader": False},
+                    "use_reloader": False,
+                    "threaded": True},
             daemon=True,
         )
         hilo.start()
         self._url_web = f"http://localhost:{self.config.web_port}"
-        logger.info(f"🌐 Panel web:      {self._url_web}")
+        logger.info(f"🔌 API del worker: {self._url_web}  "
+                    f"(el panel se sirve en el concentrador)")
 
     def _configurar_logging(self):
         nivel = getattr(logging, self.config.nivel_log.upper(), logging.INFO)

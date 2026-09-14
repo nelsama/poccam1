@@ -1,8 +1,8 @@
-# Concentrador — motor (Fase 2)
+# Concentrador — motor + panel unificado
 
 Agrega varios **workers** (cámaras) y los comunica con el **sistema externo**
-(nube). Es un proceso local, headless: no tiene interfaz todavía (el front
-unificado viene en la Fase 6).
+(nube). Además sirve el **panel web unificado**: un solo punto de entrada con
+un selector para elegir qué cámara ver.
 
 ## Qué hace
 
@@ -11,16 +11,50 @@ unificado viene en la Fase 6).
 3. **Baja** la configuración de la nube y la reparte a cada worker.
 4. **Encola** si no hay internet y reintenta (no se pierde nada).
 5. **Reporta** el estado de cada worker (heartbeat).
+6. **Sirve el panel web** en `http://localhost:8080`, con proxy hacia el worker
+   activo.
 
 ## Módulos
 
 | Archivo | Qué hace |
 |---|---|
-| `main.py` | Proceso principal: orquesta los hilos |
+| `main.py` | Proceso principal: orquesta los hilos y arranca el panel |
 | `backend/clientes.py` | Habla con los workers (API + SSE) |
 | `backend/nube.py` | Habla con el backend externo (contrato) |
 | `backend/cola.py` | Cola offline de pendientes |
-| `config.yaml` | Lista de workers + datos de la nube |
+| `backend/panel.py` | **Panel unificado**: sirve el HTML y hace proxy al worker activo |
+| `config.yaml` | Lista de workers + panel + datos de la nube |
+
+## Panel web unificado
+
+```
+NAVEGADOR ──▶ CONCENTRADOR :8080 ──▶ WORKER activo :5000
+              (panel + proxy)          (API + video)
+```
+
+- El panel (HTML/JS) vive en **`compartido/panel.html`**, un único archivo que
+  sirven tanto el worker como el concentrador — sin copias duplicadas.
+- El JS usa **rutas relativas** (`fetch('/api/config')`, `imagen.src = '/video'`),
+  así que el proxy del concentrador reenvía todo al worker activo sin cambios.
+- El **selector** de arriba cambia el worker activo; al cambiarlo el panel se
+  recarga y todas las vistas apuntan a la cámara nueva.
+- La lista de workers sale del `config.yaml` (mapa `id → url`).
+
+### Rutas propias del panel (no existen en el worker)
+
+| Ruta | Qué hace |
+|---|---|
+| `GET /api/workers-panel` | Lista los workers y cuál está activo |
+| `POST /api/worker-activo` | Cambia el worker activo (`{"id": "panel-1"}`) |
+
+### Detalles del proxy que conviene conocer
+
+- El **video** y los **SSE** se reenvían por trozos con `read1()`, sin
+  bufferizar: acumular bytes introduciría retraso en los eventos.
+- El `Content-Type` de los streams se reenvía **completo**, incluido el
+  `boundary` del MJPEG. Sin él el navegador no muestra el video.
+- Los **errores del worker** (4xx/5xx) se propagan tal cual, no se convierten
+  en 200.
 
 ## Uso
 
@@ -28,8 +62,11 @@ unificado viene en la Fase 6).
 # 1. Asegurate de tener el worker corriendo (desde su carpeta)
 cd worker && python main.py
 
-# 2. En otra terminal, desde la raíz del repo, arrancá el concentrador
-python concentrador/main.py
+# 2. En otra terminal, arrancá el concentrador
+cd concentrador && python main.py
+
+# 3. Abrí el panel
+#    http://localhost:8080
 ```
 
 ## Probar sin la nube
@@ -63,4 +100,5 @@ python tests/test_concentrador.py
 
 El concentrador aplica configuración a los workers usando
 `POST /api/externo/config`, que **ignora** `camara_fuente` y `fuente`. La URL de
-la cámara es hardware local y solo se ajusta desde el panel del propio worker.
+la cámara es hardware local y solo se ajusta desde el front local (el panel del
+concentrador, que lo reenvía al worker correspondiente).

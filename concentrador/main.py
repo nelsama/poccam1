@@ -68,6 +68,19 @@ class Concentrador:
         self._lock = threading.Lock()
         self.conteo_enviados = 0
 
+        # Panel web unificado: sirve el mismo panel del worker pero con un
+        # selector para elegir cuál ver (evita abrir una pestaña por cámara).
+        panel_cfg = self.config.get("panel", {}) or {}
+        self.panel_habilitado = bool(panel_cfg.get("enabled", True))
+        self.panel = None
+        if self.panel_habilitado:
+            from concentrador.backend.panel import ProxyPanel
+            self.panel = ProxyPanel(
+                workers=self.workers,
+                host=panel_cfg.get("host", "0.0.0.0"),
+                puerto=int(panel_cfg.get("puerto", 8080)),
+            )
+
     # ── Configuración ──────────────────────────────────────────────
 
     def _cargar(self, ruta: str) -> dict:
@@ -218,6 +231,12 @@ class Concentrador:
 
     def ejecutar(self):
         self.describir()
+
+        # Panel web unificado (proxy hacia el worker activo)
+        if self.panel is not None:
+            self.panel.iniciar_en_hilo()
+            logger.info("🌐 Panel web:      http://localhost:%d",
+                        self.panel.puerto)
 
         # Un hilo SSE por worker
         for worker in self.workers.values():

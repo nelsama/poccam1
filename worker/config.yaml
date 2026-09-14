@@ -9,7 +9,7 @@ captura:
   monitor: 1
   intervalo_segundos: 0.5
   aplicar_preset_al_iniciar: true
-  rotacion: 90
+  rotacion: 180
   reconectar_segundos: 180.0
 deteccion:
   metodo: ssim

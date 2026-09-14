@@ -17,10 +17,12 @@ display en particular.
 | Documento | Contenido |
 |---|---|
 | **`README.md`** (este) | Qué hace, cómo usarlo, pipeline, parámetros y calibración |
-| **[`API.md`](API.md)** | **Referencia de la API HTTP**: endpoints, campos, ejemplos y SSE |
+| **[`API.md`](API.md)** | **Referencia de la API HTTP del worker**: endpoints, campos, ejemplos y SSE |
 | **[`ARQUITECTURA.md`](ARQUITECTURA.md)** | Diseño interno: módulos, hilos, decisiones y deudas técnicas |
-| **[`CONTRATO_NUBE.md`](CONTRATO_NUBE.md)** | Diseño del concentrador y su contrato con el sistema externo (nube) |
+| **[`CONTRATO_NUBE.md`](CONTRATO_NUBE.md)** | **Contrato con el sistema externo**: sobre genérico, endpoints y consumo |
 | **[`DESPLIEGUE.md`](DESPLIEGUE.md)** | Puesta en marcha en la nube, problemas conocidos y verificación |
+| **[`concentrador/README.md`](concentrador/README.md)** | El panel unificado y el proxy hacia los workers |
+| **[`backend-nube/README.md`](backend-nube/README.md)** | La API en Vercel: endpoints, tablas y despliegue |
 | **`postman_collection.json`** | Colección de Postman lista para importar (30 requests) |
 
 La API de configuración/estado (solo JSON) es consumible desde otro equipo de
@@ -28,7 +30,8 @@ la red y **no expone la imagen de cámara**. Ver `API.md` para el contrato.
 
 ## ✨ Qué incluye
 
-- **Panel web** (`http://localhost:5000`) para:
+- **Panel web unificado** (`http://localhost:8080`, en el concentrador) para:
+  - **Elegir la cámara** con un selector (sin abrir una pestaña por worker)
   - Ver el video en vivo y **definir el área de análisis (ROI)** con el mouse
   - Editar **todos los parámetros en tiempo real** (sin reiniciar el servicio)
   - Ver las últimas capturas y el log de eventos con sugerencias de ajuste
@@ -50,7 +53,7 @@ worker/                ← WORKER: captura, detección, IA (corre junto a la cá
 │   ├── capturador.py  ← fuente de imágenes: pantalla, cámara USB/IP, MJPEG/RTSP
 │   ├── detector.py    ← pipeline de detección (ROI, vibración, diff, filtros)
 │   ├── ia.py          ← análisis por visión (DeepSeek) + prompt editable
-│   ├── web.py         ← panel web + API (ROI, parámetros en vivo, log, IA)
+│   ├── web.py         ← API HTTP del worker (JSON + video). Ya NO sirve el panel
 │   └── registrador.py ← log JSONL + guardado de imágenes y análisis
 ├── eventos.jsonl      ← SE GENERA: log de eventos
 ├── capturas_cambio/   ← SE GENERA: imágenes de los eventos
@@ -58,9 +61,17 @@ worker/                ← WORKER: captura, detección, IA (corre junto a la cá
 └── roi.json           ← SE GENERA: el área de análisis
 
 concentrador/          ← CONCENTRADOR: agrega varios workers y habla con la nube
-├── main.py
-├── config.yaml        ← lista de workers + datos de la nube
-└── backend/{clientes,nube,cola}.py
+├── main.py            ← bucle principal + arranca el panel unificado
+├── config.yaml        ← lista de workers + panel + datos de la nube
+├── backend/
+│   ├── clientes.py    ← cliente de la API de cada worker
+│   ├── nube.py        ← cliente del backend externo (Vercel)
+│   ├── cola.py        ← cola offline de análisis pendientes
+│   └── panel.py       ← panel web unificado (proxy + selector de worker)
+└── nube.key           ← token de la nube (NO se versiona)
+
+compartido/            ← PANEL HTML/JS, compartido por worker y concentrador
+└── panel.html         ← la interfaz (la sirve el concentrador)
 
 tests/                 ← mock de la nube + test de integración del concentrador
 
@@ -75,10 +86,16 @@ README.md · API.md · ARQUITECTURA.md · CONTRATO_NUBE.md · DESPLIEGUE.md · p
 
 ## 🚀 Inicio Rápido
 
+Se ejecutan **dos procesos**: el worker (junto a la cámara) y el concentrador
+(el panel y la conexión con la nube).
+
 ```bash
 pip install -r requirements.txt
+```
 
-# El worker se ejecuta desde su carpeta:
+**Terminal 1 — el worker** (uno por cámara):
+
+```bash
 cd worker
 
 # Cámara IP (URL HTTP MJPEG o RTSP):
@@ -90,16 +107,35 @@ python main.py --camara 0                      # webcam USB
 python main.py
 ```
 
-Al arrancar imprime la configuración y deja el panel web en
-`http://localhost:5000` (accesible desde otros equipos de la red).
+**Terminal 2 — el concentrador** (uno solo, sirve el panel y habla con la nube):
+
+```bash
+cd concentrador
+python main.py
+```
+
+El concentrador deja el panel en **`http://localhost:8080`** (accesible desde
+otros equipos de la red), con un **selector** para elegir qué worker ver.
 
 > Si la cámara no responde al arrancar (apagada, sin red, stream no
-> iniciado), el backend lo avisa y **reintenta cada 5 s** hasta que
+> iniciado), el worker lo avisa y **reintenta cada 5 s** hasta que
 > vuelve a estar disponible — no termina con un error. Ctrl+C para salir.
+
+### Puertos
+
+| Puerto | Qué es |
+|---|---|
+| **8080** | **El panel web** (concentrador) — el único que necesitas abrir |
+| 5000 | API del worker (JSON + video). Ya no sirve el panel HTML |
+| 5001, 5002... | Los siguientes workers, uno por cámara |
 
 ## 🌐 Panel web
 
-Abre `http://localhost:5000` (o `http://IP-del-equipo:5000`).
+Abre **`http://localhost:8080`** (o `http://IP-del-equipo:8080`).
+
+Arriba verás un **selector de worker**: al cambiarlo, todo el panel (video,
+ROI, parámetros, capturas, log, IA) apunta a esa cámara. Así no hay que abrir
+una pestaña por worker.
 
 | Zona | Qué hace |
 |---|---|

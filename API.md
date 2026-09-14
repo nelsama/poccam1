@@ -3,6 +3,11 @@
 Documentación de la API HTTP del backend. Complementa a `README.md` (uso) y
 `ARQUITECTURA.md` (diseño interno).
 
+> ⚠️ **El panel HTML ya no lo sirve el worker.** El único punto de entrada para
+> la interfaz es el panel del **concentrador** (`http://localhost:8080`), que
+> hace proxy hacia el worker activo. El worker expone solo su **API JSON** y el
+> **video**. Ver `concentrador/README.md`.
+
 ---
 
 ## 1. Convenciones
@@ -11,13 +16,15 @@ Documentación de la API HTTP del backend. Complementa a `README.md` (uso) y
   El servidor escucha en `0.0.0.0`, así que es accesible desde otro equipo de
   la red local con `http://<IP-del-servidor>:5000`.
 - **Formato**: todas las respuestas son `application/json`, excepto `/video`
-  (MJPEG) y `/capturas/<nombre>` (PNG), que son internos del panel.
+  (MJPEG) y `/capturas/<nombre>` (PNG).
+- **`/`** devuelve un JSON informativo (servicio, `worker_id`, dónde está el
+  panel) — **no** el panel HTML.
 - **Sesión de escritura**: `POST /api/config` acepta **cambios parciales**
   (solo los campos enviados). Los valores se aplican **en vivo** y se
   persisten en `config.yaml`.
 - **Sin autenticación** (PoC). No exponer fuera de la red local.
 - **La API pública NO expone imagen de cámara.** `/video` y `/capturas/*`
-  existen para el panel web interno; no forman parte del contrato externo.
+  existen para el panel del concentrador; no forman parte del contrato externo.
 
 ### Códigos de estado
 

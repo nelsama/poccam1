@@ -11,6 +11,15 @@ workers:
   # - id: "panel-2"
   #   url: "http://127.0.0.1:5001"
 
+# ── Panel web unificado ────────────────────────────────────────────
+# Sirve el panel del worker con un selector para elegir cuál ver, en vez
+# de abrir una pestaña por cámara. El proxy reenvía las peticiones al
+# worker activo (incluido el video, en streaming).
+panel:
+  enabled: true
+  host: "0.0.0.0"            # 0.0.0.0 = accesible desde la red local
+  puerto: 8080
+
 # ── Sistema externo (nube) ─────────────────────────────────────────
 # El token se resuelve en este orden:
 #   1. variable de entorno CONCENTRADOR_TOKEN
