@@ -6,23 +6,19 @@ __pycache__/
 venv/
 env/
 
-# ── Datos generados por la aplicación ────────────────────
-# Imágenes de eventos detectados (se regeneran al correr)
-capturas_cambio/
-# Log de eventos detectados
-eventos.jsonl
-# Análisis JSON de la IA (se regeneran al correr)
-analisis_ia/
-# Historial de prompts guardados desde el panel (data de uso)
-ia_prompts_hist.json
-# Área de análisis definida en el panel web
-roi.json
-# Cola de pendientes del concentrador (data de uso)
+# ── Datos generados por el WORKER ────────────────────────
+# (viven dentro de worker/, que es donde corre el proceso)
+worker/capturas_cambio/
+worker/analisis_ia/
+worker/eventos.jsonl
+worker/roi.json
+worker/ia_prompts_hist.json
+
+# ── Datos generados por el CONCENTRADOR ──────────────────
 concentrador/pendientes.jsonl
-# Mock del tests (si se generara data)
-tests/_test_cola.jsonl
 
 # ── Archivos de prueba / diagnóstico ─────────────────────
+tests/_test_cola.jsonl
 log_*.txt
 diagnostico/
 prueba_*.png

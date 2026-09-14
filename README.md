@@ -38,26 +38,34 @@ la red y **no expone la imagen de cámara**. Ver `API.md` para el contrato.
 - Filtros anti-falsos-positivos: estabilidad temporal, área mínima, exclusión
   del borde de la alineación
 
-## 📁 Estructura
+## 📁 Estructura (monorepo)
 
 ```
-backend/
-├── config.py        ← configuración (dataclass + YAML, guardado en vivo)
-├── capturador.py    ← fuente de imágenes: pantalla, cámara USB/IP, MJPEG
-├── detector.py      ← pipeline de detección (ROI, vibración, diff, filtros)
-├── ia.py            ← análisis por visión (DeepSeek) + prompt editable
-├── web.py           ← panel web + API (ROI, parámetros en vivo, log, IA)
-└── registrador.py   ← log JSONL + guardado de imágenes y análisis
-main.py              ← bucle principal del backend
-config.yaml          ← parámetros editables (se regenera al guardar desde la web)
-README.md            ← esta guía
-API.md               ← referencia de la API HTTP
-ARQUITECTURA.md      ← diseño interno del proyecto
-postman_collection.json ← colección de Postman de la API
-eventos.jsonl        ← SE GENERA: log de eventos (1 línea JSON por evento)
-capturas_cambio/     ← SE GENERA: imágenes de los eventos
-roi.json             ← SE GENERA: el área de análisis definida en la web
-analisis_ia/         ← SE GENERA: JSON de los análisis de IA
+worker/                ← WORKER: captura, detección, IA (corre junto a la cámara)
+├── main.py            ← bucle principal
+├── config.yaml        ← parámetros editables (se regenera al guardar desde la web)
+├── backend/
+│   ├── config.py      ← configuración (dataclass + YAML, guardado en vivo)
+│   ├── capturador.py  ← fuente de imágenes: pantalla, cámara USB/IP, MJPEG/RTSP
+│   ├── detector.py    ← pipeline de detección (ROI, vibración, diff, filtros)
+│   ├── ia.py          ← análisis por visión (DeepSeek) + prompt editable
+│   ├── web.py         ← panel web + API (ROI, parámetros en vivo, log, IA)
+│   └── registrador.py ← log JSONL + guardado de imágenes y análisis
+├── eventos.jsonl      ← SE GENERA: log de eventos
+├── capturas_cambio/   ← SE GENERA: imágenes de los eventos
+├── analisis_ia/       ← SE GENERA: JSON de los análisis de IA
+└── roi.json           ← SE GENERA: el área de análisis
+
+concentrador/          ← CONCENTRADOR: agrega varios workers y habla con la nube
+├── main.py
+├── config.yaml        ← lista de workers + datos de la nube
+└── backend/{clientes,nube,cola}.py
+
+tests/                 ← mock de la nube + test de integración del concentrador
+
+backend-nube/          ← (futuro) API en Vercel + Supabase
+
+README.md · API.md · ARQUITECTURA.md · CONTRATO_NUBE.md · postman_collection.json
 ```
 
 ## 🚀 Inicio Rápido
@@ -65,10 +73,13 @@ analisis_ia/         ← SE GENERA: JSON de los análisis de IA
 ```bash
 pip install -r requirements.txt
 
-# Cámara IP (URL HTTP MJPEG, RTSP) o USB:
+# El worker se ejecuta desde su carpeta:
+cd worker
+
+# Cámara IP (URL HTTP MJPEG o RTSP):
 python main.py --camara "http://192.168.1.144:8080/stream/frontal"
-python main.py --camara 0                      # webcam USB
 python main.py --camara "rtsp://admin:clave@192.168.1.50:554/stream1"
+python main.py --camara 0                      # webcam USB
 
 # Sin cámara: probar capturando la pantalla del computador
 python main.py

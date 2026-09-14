@@ -25,10 +25,10 @@ unificado viene en la Fase 6).
 ## Uso
 
 ```bash
-# 1. Asegurate de tener el worker corriendo
-python main.py
+# 1. Asegurate de tener el worker corriendo (desde su carpeta)
+cd worker && python main.py
 
-# 2. En otra terminal, arrancá el concentrador
+# 2. En otra terminal, desde la raíz del repo, arrancá el concentrador
 python concentrador/main.py
 ```
 
