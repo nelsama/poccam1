@@ -2,7 +2,7 @@
 # Generado por el panel web al guardar parámetros en vivo.
 captura:
   fuente: camara
-  camara_fuente: http://172.26.10.201:8080/video
+  camara_fuente: http://192.168.1.114:8080/video
   nombre_camara: panel-1
   worker_id: panel-1
   region: null
@@ -14,7 +14,7 @@ captura:
 deteccion:
   metodo: ssim
   umbral: 0.5
-  min_area_px: 300
+  min_area_px: 350
   blur_ksize: 9
   marcar_cambios: false
   frames_estables: 2

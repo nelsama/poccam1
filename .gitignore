@@ -17,6 +17,10 @@ analisis_ia/
 ia_prompts_hist.json
 # Área de análisis definida en el panel web
 roi.json
+# Cola de pendientes del concentrador (data de uso)
+concentrador/pendientes.jsonl
+# Mock del tests (si se generara data)
+tests/_test_cola.jsonl
 
 # ── Archivos de prueba / diagnóstico ─────────────────────
 log_*.txt
@@ -31,4 +35,5 @@ Thumbs.db
 
 # ── Credenciales y secretos (nunca subir) ────────────────
 .env
+*.env
 *.key

@@ -1,0 +1,19 @@
+# Configuración del Concentrador
+# Agrega varios workers (cámaras) y los comunica con el sistema externo.
+
+# ── Workers (cámaras) que este concentrador administra ─────────────
+# `id` debe coincidir con el `worker_id` configurado en cada worker.
+# `url` es la dirección LOCAL del worker (loopback o LAN).
+workers:
+  - id: "panel-1"
+    url: "http://127.0.0.1:5000"
+    # token: ""          # si el worker pide autenticación
+  # - id: "panel-2"
+  #   url: "http://127.0.0.1:5001"
+
+# ── Sistema externo (nube) ─────────────────────────────────────────
+nube:
+  enabled: false             # true = enviar/recibir de la nube
+  base_url: "https://tu-backend.vercel.app"
+  token: ""                  # se recomienda leerlo de nube.key (no versionado)
+  concentrador_id: "concentrador-1"
