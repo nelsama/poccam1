@@ -16,6 +16,9 @@ class Config:
     fuente: str = "pantalla"        # "pantalla" | "camara"
     camara_fuente: str = "0"        # índice USB o URL RTSP (si fuente="camara")
     nombre_camara: str = "camara"   # nombre legible para identificar en el log
+    worker_id: str = ""           # IDENTIDAD única y estable de este worker
+        # (ej: "panel-lavado-1"). Viaja en el contrato hacia la nube.
+        # Si está vacío, se usa `nombre_camara` como respaldo.
     region: list | None = None   # [left, top, width, height] o None
     monitor: int = 1
     intervalo_segundos: float = 1.0  # ← cada cuánto pedir imagen a la cámara
@@ -59,6 +62,8 @@ class Config:
     ia_model: str = "deepseek-v4-flash-vision-exp"
     ia_api_key: str = ""        # opcional; si vacío usa env DEEPSEEK_API_KEY o ia.key
     ia_detail: str = "low"      # low (512px, más barato) | high | auto
+    ia_esquema: str = "generico_v1"  # nombre del formato de `datos` que
+        # devuelve el prompt (viaja en el contrato hacia la nube)
 
     # Ruta del YAML que originó esta config (para guardar cambios en vivo)
     _ruta_yaml: str = "config.yaml"
@@ -75,6 +80,7 @@ class Config:
         cfg.fuente = c.get("fuente", cfg.fuente)
         cfg.camara_fuente = str(c.get("camara_fuente", cfg.camara_fuente))
         cfg.nombre_camara = c.get("nombre_camara", cfg.nombre_camara)
+        cfg.worker_id = c.get("worker_id", cfg.worker_id)
         cfg.region = c.get("region", cfg.region)
         cfg.monitor = c.get("monitor", cfg.monitor)
         cfg.intervalo_segundos = c.get("intervalo_segundos", cfg.intervalo_segundos)
@@ -113,6 +119,7 @@ class Config:
         cfg.ia_model = ia.get("model", cfg.ia_model)
         cfg.ia_api_key = ia.get("api_key", cfg.ia_api_key)
         cfg.ia_detail = ia.get("detail", cfg.ia_detail)
+        cfg.ia_esquema = ia.get("esquema", cfg.ia_esquema)
 
         web = raw.get("web", {})
         cfg.web_enabled = web.get("enabled", cfg.web_enabled)
@@ -135,6 +142,7 @@ class Config:
                 "fuente": self.fuente,
                 "camara_fuente": self.camara_fuente,
                 "nombre_camara": self.nombre_camara,
+                "worker_id": self.worker_id,
                 "region": self.region,
                 "monitor": self.monitor,
                 "intervalo_segundos": self.intervalo_segundos,
@@ -173,8 +181,14 @@ class Config:
                 # Se lee de la variable de entorno DEEPSEEK_API_KEY o del
                 # archivo ia.key (ignorado por git).
                 "detail": self.ia_detail,
+                "esquema": self.ia_esquema,
             },
         }
+
+    def worker_id_efectivo(self) -> str:
+        """Identidad del worker: usa `worker_id` y, si está vacío, cae a
+        `nombre_camara` (así los despliegues existentes siguen funcionando)."""
+        return (self.worker_id or self.nombre_camara or "camara").strip()
 
     def guardar(self, path: str | None = None):
         """Escribe la configuración actual al YAML (persiste los cambios

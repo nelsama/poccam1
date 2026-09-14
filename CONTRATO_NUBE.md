@@ -253,12 +253,14 @@ Authorization: Bearer <token>
 ```
 
 > El concentrador aplica cada bloque al worker correspondiente mediante su
-> `POST /api/config` (ver `API.md`). Los parámetros **no incluidos** se dejan
-> como están (parcial).
+> `POST /api/externo/config` (ver `API.md`). Los parámetros **no incluidos** se
+> dejan como están (parcial).
 >
-> **Parámetros de máquina** (`camara_fuente`, `web_port`): se recomienda que
-> **no** los gestione la nube, porque dependen del hardware local. El
-> concentrador puede ignorarlos aunque vengan.
+> ⚠️ **DECIDIDO: la cámara SOLO se configura localmente.**
+> `camara_fuente` y `fuente` **no** se gestionan desde la nube ni desde el
+> concentrador: son hardware de la máquina y solo se ajustan desde el front
+> local del worker. El endpoint externo (`/api/externo/config`) **ignora**
+> esos campos aunque vengan en el payload.
 
 ### 5.2 Subir análisis / eventos
 
@@ -403,7 +405,7 @@ RESULTADOS (de la cámara hacia la nube)
 |---|---|---|
 | Fuente de verdad de la config | (A) nube manda · (B) local manda | **(A)** nube manda; el front local publica sus cambios |
 | Mecanismo de bajada de config | Polling con `version` · SSE saliente | **Polling + etag** (robusto) y SSE como mejora |
-| Parámetros de máquina por API | Incluir o excluir `camara_fuente`/`web_port` | **Excluir** (son locales) |
+| Parámetros de máquina por API | Incluir o excluir `camara_fuente`/`web_port` | **Excluir (DECIDIDO)**: la cámara solo se configura desde el front local |
 | Enviar imágenes a la nube | JSON solo · JSON + imagen | JSON primero; imágenes después si hace falta |
 | Multi-esquema por worker | Un esquema fijo · varios | Uno por worker (simple); varios a futuro |
 | Auth | Sin auth · token · token + HTTPS | **Token** (el endpoint está expuesto a internet) |

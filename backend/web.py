@@ -155,13 +155,15 @@ PRESETS_CAMARA = [
 ]
 
 
-def _aplicar_config(datos: dict, config, detector, monitor=None):
+def _aplicar_config(datos: dict, config, detector, monitor=None,
+                    permitir_fuente: bool = True):
     """Valida y aplica captura/detección en caliente, y persiste en YAML.
 
-    Acepta todos los parámetros de captura, incluidos `camara_fuente` y
-    `fuente`: si cambia la cámara, se recrea el capturador EN VIVO (sin
-    reiniciar el proceso) vía `monitor.cambiar_fuente()`. Si la nueva
-    cámara no abre, se mantiene la anterior y se lanza RuntimeError.
+    `permitir_fuente=True` (panel/front LOCAL): acepta `camara_fuente` y
+    `fuente` y recrea el capturador en vivo.
+    `permitir_fuente=False` (clientes EXTERNOS: nube/concentrador): esos
+    campos se IGNORAN a propósito, porque la URL de la cámara es hardware
+    local y no debe cambiarse desde afuera.
 
     Lanza ValueError/TypeError si algún valor es inválido (el llamador
     lo convierte en HTTP 400).
@@ -185,19 +187,31 @@ def _aplicar_config(datos: dict, config, detector, monitor=None):
         config.reconectar_segundos = v
     if "nombre_camara" in c:
         config.nombre_camara = str(c["nombre_camara"])
+    if "worker_id" in c:
+        # Identidad del worker (viaja en el contrato hacia la nube)
+        config.worker_id = str(c["worker_id"]).strip()
 
-    # Cambio de fuente de cámara: se aplica al final (recrea el capturador)
+    # Cambio de fuente de cámara: se aplica al final (recrea el capturador).
+    # SOLO se permite desde el front LOCAL: la URL de la cámara es hardware
+    # de esta máquina y no debe poder cambiarse desde la nube/API externa.
     nueva_fuente = None
     nuevo_tipo = None
-    if "fuente" in c:
-        tipo = str(c["fuente"])
-        if tipo not in ("camara", "pantalla"):
-            raise ValueError("fuente debe ser 'camara' o 'pantalla'")
-        nuevo_tipo = tipo
-    if "camara_fuente" in c:
-        nueva_fuente = str(c["camara_fuente"]).strip()
-        if not nueva_fuente:
-            raise ValueError("camara_fuente no puede estar vacía")
+    if not permitir_fuente:
+        if "fuente" in c or "camara_fuente" in c:
+            logger.warning(
+                "Cambio de cámara IGNORADO: solo se permite desde el panel "
+                "local (no desde clientes externos)."
+            )
+    else:
+        if "fuente" in c:
+            tipo = str(c["fuente"])
+            if tipo not in ("camara", "pantalla"):
+                raise ValueError("fuente debe ser 'camara' o 'pantalla'")
+            nuevo_tipo = tipo
+        if "camara_fuente" in c:
+            nueva_fuente = str(c["camara_fuente"]).strip()
+            if not nueva_fuente:
+                raise ValueError("camara_fuente no puede estar vacía")
 
     # ── Detección: validar todo primero, aplicar después ──
     d = datos.get("deteccion") or {}
@@ -231,6 +245,23 @@ def _aplicar_config(datos: dict, config, detector, monitor=None):
         detector.actualizar(nuevos)
     for clave, valor in nuevos.items():
         setattr(config, clave, valor)
+
+    # ── IA (prompt/esquema/modelo) ──
+    ia = datos.get("ia") or {}
+    if "esquema" in ia:
+        config.ia_esquema = str(ia["esquema"]).strip() or "generico_v1"
+    if "model" in ia:
+        config.ia_model = str(ia["model"]).strip()
+    if "detail" in ia:
+        d = str(ia["detail"]).strip()
+        if d not in ("low", "high", "auto"):
+            raise ValueError("detail debe ser low, high o auto")
+        config.ia_detail = d
+    if "prompt" in ia:
+        from backend.ia import guarda_prompt
+        texto = str(ia["prompt"])
+        if texto.strip():
+            guarda_prompt(texto)
 
     # Cambio de cámara EN CALIENTE (después de todo lo demás).
     # Si falla, cambia_fuente revierte la config y propaga el error.
@@ -525,6 +556,12 @@ PAGINA = r"""<!DOCTYPE html>
            (Enter o clic fuera). El botón 💾 Aplicar aplica todo de una
            vez. Todo se guarda en config.yaml.</p>
         <div class="param-grid">
+          <label title="Identidad única de este worker (viaja en el contrato hacia la nube)">Worker ID
+            <input id="p-worker-id" type="text" placeholder="panel-lavado-1">
+          </label>
+          <label title="Nombre del formato del JSON que devuelve la IA (ej: personas_v1)">Esquema IA
+            <input id="p-esquema" type="text" placeholder="generico_v1">
+          </label>
           <label>Intervalo de sondeo (s)
             <input id="p-intervalo" type="number" step="0.05" min="0.05">
           </label>
@@ -816,6 +853,8 @@ async function cargarParams() {
   try {
     const res = await fetch('/api/config');
     const cfg = await res.json();
+    document.getElementById('p-worker-id').value = cfg.captura.worker_id || '';
+    document.getElementById('p-esquema').value = (cfg.ia && cfg.ia.esquema) || '';
     document.getElementById('p-intervalo').value = cfg.captura.intervalo_segundos;
     document.getElementById('p-metodo').value = cfg.deteccion.metodo;
     document.getElementById('p-min-area').value = cfg.deteccion.min_area_px;
@@ -894,6 +933,8 @@ const CAMPOS = [
   ['p-frames', 'deteccion', 'frames_estables', v => parseInt(v, 10)],
   ['p-intervalo-eventos', 'deteccion', 'min_intervalo_eventos', parseFloat],
   ['p-max-desp', 'deteccion', 'max_desplazamiento', parseFloat],
+  ['p-worker-id', 'captura', 'worker_id', v => v],
+  ['p-esquema', 'ia', 'esquema', v => v],
 ];
 for (const [id, seccion, clave, conv] of CAMPOS) {
   document.getElementById(id).addEventListener('change', () => {
@@ -971,7 +1012,13 @@ document.getElementById('btn-aplicar').addEventListener('click', async () => {
   const etiquetaOriginal = '💾 Aplicar todo';
   const colorOriginal = '#1565c0';
   const cuerpo = {
-    captura: { intervalo_segundos: parseFloat(num('p-intervalo')) },
+    captura: {
+      intervalo_segundos: parseFloat(num('p-intervalo')),
+      worker_id: num('p-worker-id'),
+    },
+    ia: {
+      esquema: num('p-esquema'),
+    },
     deteccion: {
       metodo: num('p-metodo'),
       umbral: parseFloat(num('p-umbral')),
@@ -1455,6 +1502,25 @@ def crear_app(capturador, config=None, detector=None, monitor=None):
         except RuntimeError as e:
             # Falló el cambio de cámara: el capturador anterior sigue vivo
             return jsonify({"ok": False, "error": str(e)}), 502
+        except (ValueError, TypeError) as e:
+            return jsonify({"ok": False, "error": str(e)}), 400
+
+    @app.route("/api/externo/config", methods=["POST"])
+    def api_externo_config():
+        """
+        Endpoint para CLIENTES EXTERNOS (concentrador / nube).
+
+        Aplica configuración en vivo, pero **NO permite cambiar la cámara**
+        (`camara_fuente`/`fuente` se ignoran): la URL de cámara es hardware
+        local y solo se ajusta desde el panel local.
+        """
+        if config is None:
+            return jsonify({"error": "Configuración no disponible"}), 503
+        datos = request.get_json(silent=True) or {}
+        try:
+            _aplicar_config(datos, config, detector, monitor=monitor,
+                            permitir_fuente=False)
+            return jsonify({"ok": True})
         except (ValueError, TypeError) as e:
             return jsonify({"ok": False, "error": str(e)}), 400
 

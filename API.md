@@ -100,14 +100,30 @@ Aplica parámetros en vivo y los persiste. Cuerpo con secciones parciales:
 
 #### Campos de `captura`
 
-| Campo | Tipo | Valores válidos | Default | ¿Requiere recrear cámara? |
+| Campo | Tipo | Valores válidos | Default | Notas |
 |---|---|---|---|---|
-| `fuente` | string | `"camara"` \| `"pantalla"` | `"pantalla"` | Sí |
-| `camara_fuente` | string | índice USB (`"0"`), URL HTTP/MJPEG, URL RTSP | `"0"` | **Sí (en vivo)** |
-| `nombre_camara` | string | texto libre | `"camara"` | No |
-| `intervalo_segundos` | float | `> 0` | `1.0` | No |
-| `rotacion` | int | `0` \| `90` \| `180` \| `270` (horario) | `0` | No |
-| `reconectar_segundos` | float | `>= 0` (`0` = nunca) | `180.0` | No |
+| `fuente` | string | `"camara"` \| `"pantalla"` | `"pantalla"` | **Solo desde el panel local** (ver nota abajo) |
+| `camara_fuente` | string | índice USB, URL HTTP/MJPEG o RTSP | `"0"` | **Solo desde el panel local** |
+| `nombre_camara` | string | texto libre | `"camara"` | Etiqueta de presentación |
+| `worker_id` | string | texto libre (único) | `""` | **Identidad del worker** para el contrato con la nube |
+| `intervalo_segundos` | float | `> 0` | `1.0` | Frecuencia de sondeo |
+| `rotacion` | int | `0` \| `90` \| `180` \| `270` (horario) | `0` | Rotación aplicada a la imagen |
+| `reconectar_segundos` | float | `>= 0` (`0` = nunca) | `180.0` | Reapertura del stream |
+
+> ⚠️ **La cámara NO se configura desde clientes externos.**
+> `camara_fuente` y `fuente` son **hardware local**: solo se aceptan desde el
+> panel local (`POST /api/config`). Los clientes externos deben usar
+> `POST /api/externo/config`, donde **se ignoran** (se registra un aviso). El
+> resto de los parámetros sí se aplican.
+
+#### Campos de `ia`
+
+| Campo | Tipo | Valores válidos | Default |
+|---|---|---|---|
+| `esquema` | string | nombre libre (ej. `personas_v1`) | `generico_v1` |
+| `model` | string | modelo de visión | `deepseek-v4-flash-vision-exp` |
+| `detail` | string | `low` \| `high` \| `auto` | `low` |
+| `prompt` | string | texto del prompt | — |
 
 > `aplicar_preset_al_iniciar`, `region` y `monitor` se configuran en
 > `config.yaml` (no se exponen por API).
@@ -156,6 +172,26 @@ curl -X POST http://192.168.1.50:5000/api/config \
   -H "Content-Type: application/json" \
   -d '{"deteccion": {"min_area_px": 700, "blur_ksize": 11}}'
 ```
+
+---
+
+### `POST /api/externo/config`
+
+Igual que `POST /api/config`, pero pensado para **clientes externos**
+(concentrador / nube).
+
+**Diferencia clave:** ignora `camara_fuente` y `fuente` (la cámara es hardware
+local y no se puede cambiar desde afuera). El resto de los parámetros se
+aplican igual.
+
+```bash
+curl -X POST http://127.0.0.1:5000/api/externo/config \
+  -H "Content-Type: application/json" \
+  -d '{"deteccion": {"min_area_px": 700}, "ia": {"esquema": "display_v1"}}'
+```
+
+Si el cuerpo intenta cambiar la cámara, la respuesta sigue siendo `{"ok": true}`
+pero el cambio **no se aplica** (se registra un aviso en el log del backend).
 
 ---
 
@@ -293,7 +329,8 @@ del contrato para clientes externos.
 
 1. `GET /api/estado-sistema` → saber si la cámara está viva y la config actual.
 2. `GET /api/config` → leer parámetros.
-3. `POST /api/config` → inyectar parámetros (detección, captura o cámara).
+3. `POST /api/externo/config` → inyectar parámetros (detección, IA, captura no
+   relacionada con la cámara). La cámara se configura **solo localmente**.
 4. `GET /api/config-eventos` (SSE) → enterarse de cambios hechos por otros
    clientes o por el panel web.
 5. `GET /api/log` · `GET /api/analisis` → consumir resultados.

@@ -4,6 +4,7 @@ captura:
   fuente: camara
   camara_fuente: http://172.26.10.201:8080/video
   nombre_camara: panel-1
+  worker_id: panel-1
   region: null
   monitor: 1
   intervalo_segundos: 0.5
@@ -34,3 +35,4 @@ ia:
   enabled: false
   model: deepseek-v4-flash-vision-exp
   detail: low
+  esquema: generico_v1

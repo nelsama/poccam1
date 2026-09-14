@@ -59,6 +59,7 @@ class RegistradorEventos:
         registro = {
             "evento_id": evento_id,
             "timestamp": datetime.now().astimezone().isoformat(timespec="milliseconds"),
+            "worker_id": self.config.worker_id_efectivo(),
             "camara": evento.get("camara", "desconocida"),
             "metodo": evento.get("metodo", ""),
             "score": round(float(evento.get("score", 0.0)), 6),
@@ -141,14 +142,28 @@ class RegistradorEventos:
             campos = [f"{k}={_acotar(v)}" for k, v in list(resultado.items())[:8]]
             logger.info("🕵️ Análisis IA: " + ", ".join(campos))
 
-            # Guardar JSON del análisis (nombre único por evento)
+            # Guardar el análisis con el SOBRE GENÉRICO del contrato:
+            # los metadatos del sistema quedan en el nivel superior y la
+            # respuesta libre de la IA va anidada en `datos` (así el
+            # sistema externo puede guardarla como JSON opaco sin atarse
+            # a un esquema).
             analisis = {
+                "tipo": "analisis_ia",
+                "worker_id": self.config.worker_id_efectivo(),
                 "evento_id": evento_id,
-                "evento_origen_id": evento.get("capturas_total"),
                 "timestamp": datetime.now().astimezone().isoformat(
                     timespec="milliseconds"),
-                "imagen_original": ruta_original,
-                **resultado,
+                "esquema": self.config.ia_esquema,
+                "datos": resultado,
+                "meta": {
+                    "modelo": self.config.ia_model,
+                    "detail": self.config.ia_detail,
+                    "area_px": int(evento.get("area_px", 0)),
+                    "area_borde": int(evento.get("area_borde", 0)),
+                    "score": float(evento.get("score", 0.0)),
+                    "imagen_original": ruta_original,
+                    "capturas_total": evento.get("capturas_total", 0),
+                },
             }
             nombre = f"analisis_{evento_id}.json"
             ruta_analisis = self.analisis_dir / nombre
