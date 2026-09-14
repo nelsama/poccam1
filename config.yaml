@@ -13,7 +13,7 @@ captura:
 deteccion:
   metodo: ssim
   umbral: 0.5
-  min_area_px: 350
+  min_area_px: 300
   blur_ksize: 9
   marcar_cambios: false
   frames_estables: 2
