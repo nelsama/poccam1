@@ -25,6 +25,16 @@ contrato con el concentrador (`CONTRATO_NUBE.md`) y persiste en **Supabase**.
 
 En **Supabase → SQL Editor**, ejecutar el contenido de `schema.sql`.
 
+Luego, **otorgar permisos al rol del backend** (obligatorio; sin esto la API
+responde `permission denied for table ...`):
+
+```sql
+GRANT ALL ON ALL TABLES IN SCHEMA public TO service_role;
+GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO service_role;
+GRANT ALL ON SCHEMA public TO service_role;
+GRANT USAGE ON SCHEMA public TO anon, authenticated;
+```
+
 ### 2. Variables de entorno
 
 Copiar `.env.example` a `.env` y completar:
@@ -32,7 +42,7 @@ Copiar `.env.example` a `.env` y completar:
 | Variable | De dónde sale |
 |---|---|
 | `SUPABASE_URL` | Supabase → Settings → API → Project URL |
-| `SUPABASE_SERVICE_KEY` | Supabase → Settings → API → service_role key |
+| `SUPABASE_SERVICE_KEY` | Supabase → Settings → API Keys → **Secret key** (`sb_secret_...`) |
 | `CONCENTRADOR_TOKEN` | Lo generás vos (largo y aleatorio) |
 
 ### 3. Desarrollo local
@@ -82,6 +92,10 @@ curl "https://tu-proyecto.vercel.app/api/analisis?limit=10"
 
 ## Notas de arquitectura
 
+- **Runtime Node.js (no Edge)**: el handler es `(req, res)` de `@vercel/node` y se
+  adapta internamente a la interfaz tipo Fetch. Con `runtime: 'edge'` las
+  variables de entorno se comportaban de forma inconsistente (el token aparecía
+  vacío en runtime).
 - **Serverless**: no hay proceso permanente ni filesystem. Toda la persistencia
   es en Supabase.
 - **`datos` es JSONB**: el JSON libre que devuelve la IA se guarda tal cual, así

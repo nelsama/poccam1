@@ -47,7 +47,7 @@ class Concentrador:
         n = self.config.get("nube", {}) or {}
         self.nube = ClienteNube(
             base_url=n.get("base_url", ""),
-            token=n.get("token", ""),
+            token=self._token_nube(n),
             concentrador_id=n.get("concentrador_id", "concentrador-1"),
         )
         self.nube_habilitada = bool(n.get("enabled", False))
@@ -77,6 +77,26 @@ class Concentrador:
         except OSError as e:
             logger.error("No se pudo leer %s: %s", ruta, e)
             sys.exit(1)
+
+    def _token_nube(self, seccion: dict) -> str:
+        """Resuelve el token de la nube.
+
+        Prioridad: variable de entorno > `nube.key` (gitignored) > `config.yaml`.
+        """
+        import os
+        token = os.environ.get("CONCENTRADOR_TOKEN", "").strip()
+        if token:
+            return token
+
+        ruta_key = Path(__file__).resolve().parent / "nube.key"
+        try:
+            token = ruta_key.read_text(encoding="utf-8").strip()
+            if token:
+                return token
+        except OSError:
+            pass
+
+        return str(seccion.get("token", "") or "").strip()
 
     # ── Recolección ────────────────────────────────────────────────
 

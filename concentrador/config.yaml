@@ -12,8 +12,12 @@ workers:
   #   url: "http://127.0.0.1:5001"
 
 # ── Sistema externo (nube) ─────────────────────────────────────────
+# El token se resuelve en este orden:
+#   1. variable de entorno CONCENTRADOR_TOKEN
+#   2. archivo `nube.key` (gitignored, recomendado)
+#   3. campo `token` aquí abajo
 nube:
-  enabled: false             # true = enviar/recibir de la nube
-  base_url: "https://tu-backend.vercel.app"
-  token: ""                  # se recomienda leerlo de nube.key (no versionado)
+  enabled: true             # true = enviar/recibir de la nube
+  base_url: "https://backend-nube.vercel.app"
+  token: ""                  # dejar vacío si usas nube.key
   concentrador_id: "concentrador-1"

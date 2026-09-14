@@ -17,20 +17,74 @@
 
 import { supabase, autenticado, json } from '../lib/supabase.js';
 
-export const config = { runtime: 'edge' };
+// Runtime Node.js (no Edge): las variables de entorno se inyectan de forma
+// fiable; en Edge se comportaban de manera inconsistente.
+export const config = { runtime: 'nodejs' };
 
-export default async function handler(req: Request): Promise<Response> {
-  const url = new URL(req.url);
+/**
+ * Adaptador Vercel Node → interfaz tipo Fetch usada por el resto del código.
+ * `@vercel/node` entrega (req, res) con Node streams.
+ */
+interface ReqNode {
+  method?: string;
+  url?: string;
+  headers: Record<string, string | string[] | undefined>;
+  on: (evento: string, cb: (trozo?: unknown) => void) => void;
+}
+
+interface ResNode {
+  statusCode: number;
+  setHeader: (k: string, v: string) => void;
+  end: (cuerpo?: string) => void;
+}
+
+function leerCuerpo(req: ReqNode): Promise<string> {
+  return new Promise((resolve) => {
+    let datos = '';
+    req.on('data', (t) => {
+      datos += String(t);
+    });
+    req.on('end', () => resolve(datos));
+  });
+}
+
+export default async function handler(req: ReqNode, res: ResNode): Promise<void> {
+  const url = new URL(req.url ?? '/', 'https://local');
+  const cuerpo = req.method === 'GET' ? '' : await leerCuerpo(req);
+
+  const peticion = {
+    method: (req.method ?? 'GET').toUpperCase(),
+    url: url.toString(),
+    headers: new Map(
+      Object.entries(req.headers).map(([k, v]) => [k, Array.isArray(v) ? v.join(',') : String(v ?? '')]),
+    ),
+    json: async () => (cuerpo ? JSON.parse(cuerpo) : {}),
+  };
+
+  const respuesta = await manejar(peticion, url);
+  const texto = await respuesta.text();
+  res.statusCode = respuesta.status;
+  res.setHeader('Content-Type', respuesta.headers.get('Content-Type') ?? 'application/json');
+  res.end(texto);
+}
+interface Peticion {
+  method: string;
+  url: string;
+  headers: Map<string, string>;
+  json: () => Promise<Record<string, unknown>>;
+}
+
+async function manejar(peticion: Peticion, url: URL): Promise<Response> {
   const ruta = url.pathname.replace(/\/+$/, '');
-  const metodo = req.method.toUpperCase();
+  const metodo = peticion.method;
 
   try {
     // ── Endpoints del concentrador (requieren token) ────────────────
     if (ruta.startsWith('/api/concentrador/')) {
-      if (!autenticado(req as unknown as { headers: Record<string, unknown> })) {
+      if (!autenticado(peticion)) {
         return json(401, { error: 'token inválido' });
       }
-      return await rutasConcentrador(ruta, metodo, req, url);
+      return await rutasConcentrador(ruta, metodo, peticion, url);
     }
 
     // ── Consultas de lectura (para dashboards) ──────────────────────
@@ -59,7 +113,7 @@ export default async function handler(req: Request): Promise<Response> {
 async function rutasConcentrador(
   ruta: string,
   metodo: string,
-  req: Request,
+  req: Peticion,
   url: URL,
 ): Promise<Response> {
   const db = supabase();

@@ -34,11 +34,11 @@ export function supabase(): SupabaseClient {
 }
 
 /** Verifica el token del concentrador (Authorization: Bearer <token>). */
-export function autenticado(req: { headers: Record<string, unknown> }): boolean {
+export function autenticado(req: { headers: Map<string, string> }): boolean {
   const esperado = process.env.CONCENTRADOR_TOKEN;
   // Si no hay token configurado, se permite (modo desarrollo).
   if (!esperado) return true;
-  const cabecera = String(req.headers['authorization'] ?? '');
+  const cabecera = req.headers.get('authorization') ?? '';
   const token = cabecera.replace(/^Bearer\s+/i, '').trim();
   return token === esperado;
 }
