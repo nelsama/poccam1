@@ -63,7 +63,11 @@ concentrador/          ← CONCENTRADOR: agrega varios workers y habla con la nu
 
 tests/                 ← mock de la nube + test de integración del concentrador
 
-backend-nube/          ← (futuro) API en Vercel + Supabase
+backend-nube/          ← API del sistema externo (Vercel · Node/TS + Supabase)
+├── api/index.ts       ← endpoints del contrato (config, analisis, estado)
+├── lib/supabase.ts    ← cliente de Supabase + auth por token
+├── schema.sql         ← tablas (ejecutar en Supabase)
+└── README.md          ← puesta en marcha y despliegue
 
 README.md · API.md · ARQUITECTURA.md · CONTRATO_NUBE.md · postman_collection.json
 ```

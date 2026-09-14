@@ -17,6 +17,12 @@ worker/ia_prompts_hist.json
 # ── Datos generados por el CONCENTRADOR ──────────────────
 concentrador/pendientes.jsonl
 
+# ── Backend nube (Node) ──────────────────────────────────
+backend-nube/node_modules/
+backend-nube/.vercel/
+backend-nube/.env
+backend-nube/.env.local
+
 # ── Archivos de prueba / diagnóstico ─────────────────────
 tests/_test_cola.jsonl
 log_*.txt
@@ -33,3 +39,4 @@ Thumbs.db
 .env
 *.env
 *.key
+!backend-nube/.env.example

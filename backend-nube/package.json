@@ -1,0 +1,19 @@
+{
+  "name": "poccam-backend-nube",
+  "version": "1.0.0",
+  "description": "API del sistema externo: recibe análisis del concentrador y sirve configuración",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vercel dev",
+    "deploy": "vercel --prod"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "typescript": "^5.5.0",
+    "vercel": "^34.0.0"
+  }
+}
