@@ -181,7 +181,58 @@ curl "https://<ref>.supabase.co/rest/v1/config_workers?select=*" \
 Si esto devuelve `permission denied`, el problema está en Supabase y no en
 Vercel.
 
-### 3.3 · La CLI de Vercel no acepta el token
+### 3.3 · La API responde `404 NOT_FOUND` (con `gru1::...`)
+
+**Síntoma:** el endpoint responde `404` con un cuerpo que parece de Vercel:
+
+```
+The page could not be found
+
+NOT_FOUND
+
+gru1::hs5m6-1789404672063-32e5be665ccd
+```
+
+**Causa más probable (A): el deploy se hizo desde la carpeta equivocada.**
+Este es un monorepo: la API vive en `backend-nube/`, no en la raíz. Si se corre
+`vercel --prod` desde la raíz del repo, Vercel publica una carpeta sin la función
+`api/` y **pisa el deploy bueno**. El servicio queda caído.
+
+**Cómo reconocerlo:** el deploy tarda **2-3 s** en vez de los ~13 s de un build
+real. Mirar con:
+
+```bash
+cd backend-nube
+npx vercel ls --prod
+```
+
+**Solución:** desplegar siempre desde `backend-nube/`:
+
+```bash
+cd backend-nube && node deploy.mjs deploy
+```
+
+**Causa más probable (B): Deployment Protection activado.** Si en vez de `404`
+llega un `302` que redirige a `vercel.com/sso-api`, el proyecto exige
+autenticación de Vercel y el concentrador no puede entrar. El síntoma que ve el
+concentrador es confuso: reporta `404` porque sigue el redirect y recibe la
+página HTML de error.
+
+Comprobar el redirect:
+
+```bash
+curl -sI https://<deploy>.vercel.app/api/salud
+# Location: https://vercel.com/sso-api?url=...  → protección activa
+```
+
+**Solución:** <https://vercel.com/<equipo>/<proyecto>/settings/deployment-protection>
+→ **Vercel Authentication: Disabled**.
+
+> ⚠️ Esta protección **rompe la integración con el concentrador** sin dar un
+error claro. Si en el futuro el servicio deja de responder de un momento a otro,
+revisar esto antes de sospechar del código.
+
+### 3.4 · La CLI de Vercel no acepta el token
 
 **Síntoma:**
 
@@ -248,6 +299,9 @@ git. Si se conecta el repositorio en el dashboard de Vercel, cada push a
 ⚠️ En ese caso hay que configurar **Root Directory = `backend-nube`**, porque es
 un monorepo y la API no está en la raíz.
 
+> ⚠️ **Nunca correr `vercel --prod` desde la raíz del monorepo.** Publica una
+> carpeta sin la función `api/` y **pisa la producción**. Ver §3.3-A.
+
 **Las variables de entorno no se versionan**: al recrear el proyecto en Vercel
 hay que volver a cargarlas (Paso 3).
 
@@ -260,6 +314,8 @@ hay que volver a cargarlas (Paso 3).
 | `Faltan SUPABASE_URL o ...` | Variables no cargadas en el proyecto de Vercel | Paso 3 |
 | `token inválido` con token correcto | Runtime Edge | §3.1 |
 | `permission denied` | Faltan `GRANT` | §3.2 |
+| `404 NOT_FOUND` (deploy de 2-3 s) | Deploy desde la carpeta equivocada | §3.3-A |
+| `302` hacia `vercel.com/sso-api` | Deployment Protection activo | §3.3-B |
 | `deploy.mjs` no encuentra el token | Falta `.vercel-token` | Paso 4 |
 | El concentrador no baja config | `enabled: false` o token no resuelto | Paso 5 |
 | Config llega pero no se aplica | Worker desconocido (revisar `worker_id`) | `config.yaml` del concentrador |
