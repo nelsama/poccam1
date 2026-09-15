@@ -16,6 +16,7 @@ worker/ia_prompts_hist.json
 
 # ── Datos generados por el CONCENTRADOR ──────────────────
 concentrador/pendientes.jsonl
+concentrador/estado_weizhou.json
 
 # ── Backend nube (Node) ──────────────────────────────────
 backend-nube/node_modules/

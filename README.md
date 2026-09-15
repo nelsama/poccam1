@@ -62,13 +62,15 @@ worker/                ← WORKER: captura, detección, IA (corre junto a la cá
 
 concentrador/          ← CONCENTRADOR: agrega varios workers y habla con la nube
 ├── main.py            ← bucle principal + arranca el panel unificado
-├── config.yaml        ← lista de workers + panel + datos de la nube
+├── config.yaml        ← lista de workers + panel + Weizhou + datos de la nube
 ├── backend/
 │   ├── clientes.py    ← cliente de la API de cada worker
 │   ├── nube.py        ← cliente del backend externo (Vercel)
 │   ├── cola.py        ← cola offline de análisis pendientes
-│   └── panel.py       ← panel web unificado (proxy + selector de worker)
-└── nube.key           ← token de la nube (NO se versiona)
+│   ├── panel.py       ← panel web unificado (proxy + selector de worker)
+│   └── weizhou.py     ← envía el estado de las máquinas (solo transiciones)
+├── nube.key           ← token de la nube (NO se versiona)
+└── weizhou.key        ← API key de Weizhou (NO se versiona)
 
 compartido/            ← PANEL HTML/JS, compartido por worker y concentrador
 └── panel.html         ← la interfaz (la sirve el concentrador)

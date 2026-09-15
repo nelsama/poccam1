@@ -81,6 +81,9 @@ class Concentrador:
                 puerto=int(panel_cfg.get("puerto", 8080)),
             )
 
+        # Weizhou: informa el estado de cada máquina (solo transiciones).
+        self.weizhou = self._crear_weizhou()
+
     # ── Configuración ──────────────────────────────────────────────
 
     def _cargar(self, ruta: str) -> dict:
@@ -111,6 +114,39 @@ class Concentrador:
 
         return str(seccion.get("token", "") or "").strip()
 
+    def _crear_weizhou(self):
+        """Crea el cliente de Weizhou (o None si está deshabilitado).
+
+        La API key se resuelve igual que el token de la nube:
+        variable de entorno > archivo `weizhou.key` > `config.yaml`.
+        """
+        import os
+        cfg = self.config.get("weizhou", {}) or {}
+        if not cfg.get("enabled", False):
+            return None
+
+        clave = os.environ.get("WEIZHOU_API_KEY", "").strip()
+        if not clave:
+            ruta_key = Path(__file__).resolve().parent / "weizhou.key"
+            try:
+                clave = ruta_key.read_text(encoding="utf-8").strip()
+            except OSError:
+                pass
+        if not clave:
+            clave = str(cfg.get("api_key", "") or "").strip()
+
+        if not clave:
+            logger.warning("Weizhou habilitado pero sin API key: se desactiva")
+            return None
+
+        from concentrador.backend.weizhou import ClienteWeizhou
+        return ClienteWeizhou(
+            base_url=cfg.get("base_url", "https://weizhou.vercel.app"),
+            api_key=clave,
+            ruta_estado=Path(__file__).resolve().parent / "estado_weizhou.json",
+            mapeo=cfg.get("mapeo", {}) or {},
+        )
+
     # ── Recolección ────────────────────────────────────────────────
 
     def _al_recibir_aviso(self, worker_id: str):
@@ -129,7 +165,19 @@ class Concentrador:
             self._enviar_analisis(worker_id, analisis)
 
     def _enviar_analisis(self, worker_id: str, analisis: dict):
-        """Envía un análisis al sistema externo (o lo encola si falla)."""
+        """Envía un análisis a los destinos externos.
+
+        • Nube (Vercel/Supabase): histórico de todos los análisis.
+        • Weizhou: estado en vivo de la máquina (solo transiciones).
+        """
+        # ── Destino 1: Weizhou (estado de la máquina, en vivo) ─────
+        if self.weizhou is not None:
+            try:
+                self.weizhou.procesar_analisis(worker_id, analisis)
+            except Exception:  # noqa: BLE001 — no debe tumbar el bucle
+                logger.exception("Error enviando el estado a Weizhou")
+
+        # ── Destino 2: nube (histórico) ────────────────────────────
         sobre = dict(analisis)
         # Garantizar los campos del contrato
         sobre.setdefault("tipo", "analisis_ia")

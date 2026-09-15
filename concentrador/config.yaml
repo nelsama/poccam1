@@ -20,6 +20,35 @@ panel:
   host: "0.0.0.0"            # 0.0.0.0 = accesible desde la red local
   puerto: 8080
 
+# ── Sistema externo: Weizhou (estado de las máquinas) ──────────────
+# Informa en tiempo real si cada máquina está EN USO o LIBRE. Solo envía
+# cuando el estado CAMBIA (no en cada análisis): la API lo pide así para
+# no llenar la bitácora de eventos repetidos.
+#
+# La clave se resuelve: entorno WEIZHOU_API_KEY > weizhou.key > api_key.
+#
+# `mapeo` traduce el worker_id LOCAL a los identificadores de Weizhou. Si un
+# worker no está en el mapeo, se envía su worker_id como `codigo` (requiere
+# que Weizhou tenga asignado ese código externo a la máquina).
+weizhou:
+  enabled: true
+  base_url: "https://weizhou.vercel.app"
+  api_key: ""              # dejar vacío si usas weizhou.key
+  mapeo:
+    panel-1:               # worker local → Lavadora 1
+      maquina_id: "5b169038-16d9-4ca0-a9e8-a776c6d2b966"
+      camara_id: "95369cfc-8136-45e9-8ea8-27d8085abbd3"
+    # Para agregar más workers, descomentar y ajustar el `worker_id`:
+    # panel-2:             # → Lavadora 2
+    #   maquina_id: "1d89e671-f653-4cde-9f05-e813da539756"
+    #   camara_id: "1b1d1946-416d-4e1a-b214-5afeafbe3006"
+    # panel-3:             # → Secadora 1
+    #   maquina_id: "ecbb643d-8f4b-4244-a173-f94161392d6c"
+    #   camara_id: "5c747fea-4b47-4bc4-9e98-505b836d4315"
+    # panel-4:             # → Planchadora / Dobladora 1
+    #   maquina_id: "40a1c6fb-251c-402a-b00d-aee081b65f3e"
+    #   camara_id: "a68db92d-249d-40e3-b1d6-f52ebcac3829"
+
 # ── Sistema externo (nube) ─────────────────────────────────────────
 # El token se resuelve en este orden:
 #   1. variable de entorno CONCENTRADOR_TOKEN
